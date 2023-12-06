@@ -11,3 +11,7 @@ https://www.forbes.com/sites/bernardmarr/2019/12/16/the-10-best-examples-of-how-
 https://insights.daffodilsw.com/blog/10-uses-of-artificial-intelligence-in-day-to-day-life
 
 https://youtu.be/emrHKQPQYQ4
+
+https://www.data-analist.info/exploratieve-data-analyse-eda-wat-is-dat/
+
+https://mineracaodedados.files.wordpress.com/2012/04/the-crisp-dm-model-the-new-blueprint-for-data-mining-shearer-colin.pdf
