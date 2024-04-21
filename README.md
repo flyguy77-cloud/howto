@@ -1,5 +1,10 @@
 Hi there,
 
+https://www.youtube.com/watch?v=UAxABZCpilE
+https://www.youtube.com/watch?v=YbjoaMN67Hw
+https://www.eff.org/deeplinks/2023/05/eus-proposed-cyber-resilience-act-raises-concerns-open-source-and-cybersecurity
+
+
 Architectural patterns:
 https://www.turing.com/blog/software-architecture-patterns-types/
 
