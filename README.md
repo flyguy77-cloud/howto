@@ -3,7 +3,7 @@ Hi there,
 # DevSecOps
 ### New
 
-> [link](https://youtu.be/PGYVUI8hJPk/){:target="_blank"} - **30 min**
+> <a href="https://youtu.be/PGYVUI8hJPk/" target="_blank">Video 1</a> - **30 min**
 >
 > https://learn.microsoft.com/en-us/azure/security/
 >
