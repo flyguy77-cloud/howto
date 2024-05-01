@@ -6,6 +6,8 @@ Hi there,
 >
 > https://medium.com/@workboxtech/ai-tools-for-smarter-continuous-integration-and-deployment-f66f1a73e4f7
 >
+> https://www.linkedin.com/pulse/how-ai-fits-azure-devops-venkata-ramarao-nibhanupudi/
+>
 > https://www.youtube.com/watch?v=2AHnI9-oyv8 - **1h 32min**
 
 
