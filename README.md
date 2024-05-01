@@ -3,6 +3,12 @@ Hi there,
 # DevSecOps
 ### New
 
+>
+> https://medium.com/@workboxtech/ai-tools-for-smarter-continuous-integration-and-deployment-f66f1a73e4f7
+>
+> https://www.youtube.com/watch?v=2AHnI9-oyv8 - **1h 32min**
+
+
 > <a href="https://youtu.be/PGYVUI8hJPk/" target="_blank">Video 1</a> - **30 min**
 >
 > https://learn.microsoft.com/en-us/azure/security/
@@ -16,6 +22,7 @@ Hi there,
 > https://learn.microsoft.com/en-us/azure/cloud-adoption-framework/secure/development-security-architecture
 >
 > https://learn.microsoft.com/en-us/azure/cloud-adoption-framework/secure/best-practices/secure-devops
+
 
 > security by design - principles
 >
