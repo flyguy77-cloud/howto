@@ -3,6 +3,7 @@ Hi there,
 # DevSecOps
 ### New
 
+> https://www.youtube.com/watch?v=ephM9Nw9pAA&list=PLEx5khR4g7PKuDrMVDkHvItDxCsB0msAs&index=11
 >
 > https://medium.com/@workboxtech/ai-tools-for-smarter-continuous-integration-and-deployment-f66f1a73e4f7
 >
