@@ -3,8 +3,21 @@ Hi there,
 # DevSecOps
 ### New
 
-> https://www.youtube.com/watch?v=ephM9Nw9pAA&list=PLEx5khR4g7PKuDrMVDkHvItDxCsB0msAs&index=11
+*WEEK 14*
+> https://dzone.com/articles/3-ways-specification-by-example-with-gherkin-reduc
 >
+> https://youtu.be/6RnK-Sa0dJw
+>
+> https://katalon.com/resources-center/blog/tdd-vs-bdd
+>
+> https://katalon.com/resources-center/blog/tdd-vs-bdd
+> 
+> https://www.bartosz.nl/trendsz/behaviour-driven-development-kracht-begrijpelijke-taal/
+>
+> https://www.youtube.com/watch?v=ephM9Nw9pAA&list=PLEx5khR4g7PKuDrMVDkHvItDxCsB0msAs&index=11
+
+
+*WEEK 13*
 > https://medium.com/@workboxtech/ai-tools-for-smarter-continuous-integration-and-deployment-f66f1a73e4f7
 >
 > https://www.linkedin.com/pulse/how-ai-fits-azure-devops-venkata-ramarao-nibhanupudi/
