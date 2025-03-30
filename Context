@@ -1,0 +1,21 @@
+@startuml C4-Context
+!includeurl https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+LAYOUT_WITH_LEGEND()
+
+Person(user, "Gebruiker", "Maakt en voert workflows uit via het portaal")
+
+System(workflow_portal, "Workflow Portaal", "Webapplicatie", "Stelt gebruikers in staat om workflows te ontwerpen, starten en monitoren")
+
+System_Ext(keycloak, "Keycloak", "SSO Identity Provider")
+System_Ext(gitlab, "GitLab", "Opslag van scripts")
+System_Ext(bhk, "BHK", "Externe databron")
+System_Ext(dms, "DMS", "Document Management Systeem")
+
+Rel(user, workflow_portal, "Gebruikt via browser")
+Rel(workflow_portal, keycloak, "Authenticeert via OIDC")
+Rel(workflow_portal, gitlab, "Haalt scripts op")
+Rel(workflow_portal, bhk, "Haalt gegevens op")
+Rel(workflow_portal, dms, "Slaat rapporten op of haalt deze op")
+
+@enduml
