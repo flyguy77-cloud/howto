@@ -1,0 +1,41 @@
+@startuml C4-Container
+!includeurl https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+Person(user, "Gebruiker", "Gebruikt het self-service portaal om workflows te beheren")
+
+System_Boundary(workflow_system, "Workflow Portaal") {
+    Container(frontend, "Frontend (Canvas UI)", "React", "Maakt workflows, toont status en geeft gebruikersinterface")
+    Container(backend, "Backend API", "FastAPI/Node", "Valideert workflows, routeert acties naar engine en scheduler")
+    Container(engine, "Workflow Engine", "Python Service", "Voert workflows uit, plaatst taken in queue")
+    Container(scheduler, "Scheduler", "Python Service", "Start geplande workflows op basis van tijdschema")
+    Container(queue, "Task Queue", "Kafka/RabbitMQ", "Asynchrone communicatie tussen engine en workers")
+    Container(worker, "Worker(s)", "Python", "Voert taken uit zoals data ophalen, script uitvoeren of rapport genereren")
+    Container(executor, "Script Executor", "Sandbox Container", "Beveiligde omgeving voor scripts")
+    ContainerDb(db, "PostgreSQL DB", "PostgreSQL", "Slaat workflows, logs en taakstatus op")
+}
+
+System_Ext(keycloak, "Keycloak", "Authenticatie via OIDC")
+System_Ext(gitlab, "GitLab", "Externe opslag voor scripts")
+System_Ext(bhk, "BHK API", "Databron voor gegevens")
+System_Ext(dms, "DMS API", "Opslag voor rapporten")
+
+Rel(user, frontend, "Gebruikt")
+Rel(frontend, backend, "REST API calls")
+Rel(backend, keycloak, "Token validatie (OIDC)")
+Rel(backend, engine, "Start workflow")
+Rel(backend, scheduler, "Configureert schedules")
+Rel(backend, db, "Leest/schrijft workflowstatus")
+Rel(scheduler, db, "Leest geplande workflows")
+Rel(scheduler, engine, "Start scheduled workflow")
+Rel(engine, queue, "Plaatst taken")
+Rel(engine, db, "Slaat workflowstatus op")
+Rel(worker, queue, "Leest taken")
+Rel(worker, gitlab, "Haalt scripts op")
+Rel(worker, bhk, "Haalt data op")
+Rel(worker, dms, "Slaat rapporten op")
+Rel(worker, executor, "Voert scripts uit")
+Rel(worker, engine, "Stuurt taakstatus terug")
+
+@enduml
