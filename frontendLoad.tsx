@@ -1,72 +1,77 @@
 // modal component LoadWorkflowModal / Dialog
+import React, { useEffect, useState } from "react";
 import {
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  Button,
-  Select,
-  MenuItem,
-  FormControl,
-  InputLabel,
+  Dialog, DialogTitle, DialogContent, DialogActions,
+  Button, Select, MenuItem, CircularProgress
 } from "@mui/material";
-import { useEffect, useState } from "react";
 
-interface LoadWorkflowDialogProps {
-  open: boolean;
-  onClose: () => void;
-  onLoad: (workflowId: number) => void;
+interface WorkflowInfo {
+  id: number;
+  name: string;
 }
 
-export const LoadWorkflowDialog: React.FC<LoadWorkflowDialogProps> = ({
-  open,
-  onClose,
-  onLoad,
-}) => {
-  const [selectedId, setSelectedId] = useState<number | "">("");
-  const [availableWorkflows, setAvailableWorkflows] = useState<
-    { id: number; name: string }[]
-  >([]);
+interface LoadWorkflowModalProps {
+  open: boolean;
+  onClose: () => void;
+  onLoad: (workflow: any) => void;
+}
 
+export const LoadWorkflowModal: React.FC<LoadWorkflowModalProps> = ({ open, onClose, onLoad }) => {
+  const [workflows, setWorkflows] = useState<WorkflowInfo[]>([]);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
+
+  // Haal lijst met workflows op bij openen modal
   useEffect(() => {
     if (open) {
-      fetch("/api/workflows") // ← Pas deze endpoint aan indien nodig
+      fetch("/api/workflows")
         .then((res) => res.json())
-        .then((data) => setAvailableWorkflows(data))
-        .catch((err) => console.error("Error loading workflows", err));
+        .then(setWorkflows)
+        .catch((err) => console.error("Laden workflows mislukt", err));
     }
   }, [open]);
 
+  // Als gebruiker een workflow selecteert en op 'Laden' klikt
+  const handleLoadClick = async () => {
+    if (!selectedId) return;
+
+    setLoading(true);
+    try {
+      const response = await fetch(`/api/workflows/${selectedId}`);
+      const data = await response.json();
+      onLoad(data);  // Geef data terug aan parent (Editor)
+      onClose();     // Sluit modal
+    } catch (err) {
+      console.error("Fout bij ophalen van workflow:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <Dialog open={open} onClose={onClose}>
-      <DialogTitle>Selecteer een workflow</DialogTitle>
+      <DialogTitle>Workflow laden</DialogTitle>
       <DialogContent>
-        <FormControl fullWidth margin="normal">
-          <InputLabel id="workflow-select-label">Workflow</InputLabel>
+        {workflows.length === 0 ? (
+          <p>Geen workflows beschikbaar</p>
+        ) : (
           <Select
-            labelId="workflow-select-label"
-            value={selectedId}
+            value={selectedId || ""}
             onChange={(e) => setSelectedId(Number(e.target.value))}
+            fullWidth
           >
-            {availableWorkflows.map((wf) => (
+            {workflows.map((wf) => (
               <MenuItem key={wf.id} value={wf.id}>
                 {wf.name}
               </MenuItem>
             ))}
           </Select>
-        </FormControl>
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Annuleren</Button>
-        <Button
-          onClick={() => {
-            onLoad(Number(selectedId));
-            onClose();
-          }}
-          disabled={selectedId === ""}
-          variant="contained"
-        >
-          Laden
+        <Button onClick={handleLoadClick} disabled={!selectedId || loading}>
+          {loading ? <CircularProgress size={20} /> : "Laden"}
         </Button>
       </DialogActions>
     </Dialog>
