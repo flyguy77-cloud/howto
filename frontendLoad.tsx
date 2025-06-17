@@ -1,3 +1,37 @@
+const [workflows, setWorkflows] = useState<WorkflowMap[]>([]);
+
+// geen await icm .then gebruiken
+export const UseGetAllWorkflows = async (): Promise<WorkflowMap[]> => {
+  const res = await axios.get<WorkflowMap[]>("/api/workflows");
+  return res.data;
+};
+
+// of,
+return axios.get<WorkflowMap[]>("/api/workflows").then((response) => response.data);
+
+
+useEffect(() => {
+  if (!open) return;
+
+  const fetchData = async () => {
+    try {
+      const data = await UseGetAllWorkflows(); // ✅ wacht netjes
+      setWorkflows(data);
+    } catch (error) {
+      console.error("Fout bij ophalen workflows:", error);
+    }
+  };
+
+  fetchData();
+}, [open]);
+
+// debugging
+const data = await UseGetAllWorkflows();
+console.log("🔍 typeof data:", typeof data);
+console.log("🔍 isArray:", Array.isArray(data));
+console.log("🔍 example item:", data[0]);
+
+
 // modal component LoadWorkflowModal / Dialog
 import React, { useEffect, useState } from "react";
 import {
