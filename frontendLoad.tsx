@@ -149,3 +149,52 @@ export const DragAndDropSidebar = ({
     // setWorkflowMeta(workflowData.workflow) eventueel ook
   }}
 />;
+
+///////   new
+
+const Editor = () => {
+  const [nodes, setNodes] = useState<Node[]>([]);
+  const [edges, setEdges] = useState<Edge[]>([]);
+  const [loadModalOpen, setLoadModalOpen] = useState(false);
+
+  const handleWorkflowLoad = (loadedNodes: Node[], loadedEdges: Edge[]) => {
+    setNodes(loadedNodes);
+    setEdges(loadedEdges);
+  };
+
+  return (
+    <>
+      <Sidebar onLoadClick={() => setLoadModalOpen(true)} />
+      <LoadModal
+        open={loadModalOpen}
+        onClose={() => setLoadModalOpen(false)}
+        onWorkflowLoad={handleWorkflowLoad} // 👈 callback meegeven
+      />
+      <FlowCanvas nodes={nodes} edges={edges} />
+    </>
+  );
+};
+
+
+const LoadModal = ({ open, onClose, onWorkflowLoad }: {
+  open: boolean;
+  onClose: () => void;
+  onWorkflowLoad: (nodes: Node[], edges: Edge[]) => void;
+}) => {
+  const [workflows, setWorkflows] = useState<WorkflowInfo[]>([]);
+  const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowInfo | null>(null);
+
+  const handleSelect = async (workflowId: number) => {
+    const response = await axios.get(`/api/workflows/${workflowId}`);
+    const { nodes, edges } = response.data;
+    onWorkflowLoad(nodes, edges); // 👈 Terug naar Editor
+    onClose(); // Modal sluiten
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose}>
+      {/* lijst workflows met selectie */}
+      {/* button om handleSelect te triggeren */}
+    </Dialog>
+  );
+};
