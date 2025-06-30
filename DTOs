@@ -1,0 +1,194 @@
+public record WorkflowResponseDto(
+    Long id,
+    String name,
+    String description,
+    WorkflowMetadata metadata,
+    List<NodeDto> nodes,
+    List<EdgeDto> edges
+) {
+    public static WorkflowResponseDto fromEntity(Workflow workflow) {
+        List<NodeDto> nodeDtos = workflow.getNodes().stream()
+            .map(NodeDto::fromEntity)
+            .toList();
+
+        List<EdgeDto> edgeDtos = workflow.getEdges().stream()
+            .map(EdgeDto::fromEntity)
+            .toList();
+
+        return new WorkflowResponseDto(
+            workflow.getId(),
+            workflow.getName(),
+            workflow.getDescription(),
+            workflow.getMetadata(),
+            nodeDtos,
+            edgeDtos
+        );
+    }
+}
+
+public record NodeDto(
+    String nodeId,
+    String type,
+    String label,
+    double positionX,
+    double positionY,
+    NodeData data
+) {
+    public static NodeDto fromEntity(Node node) {
+        return new NodeDto(
+            node.getNodeId(),
+            node.getType(),
+            node.getLabel(),
+            node.getPositionX(),
+            node.getPositionY(),
+            node.getData()
+        );
+    }
+}
+
+public record EdgeDto(
+    String edgeId,
+    String source,
+    String target,
+    String label
+) {
+    public static EdgeDto fromEntity(Edge edge) {
+        return new EdgeDto(
+            edge.getEdgeId(),
+            edge.getSource(),
+            edge.getTarget(),
+            edge.getLabel()
+        );
+    }
+}
+
+@Override
+public WorkflowResponseDto getWorkflowById(Long id) {
+    Workflow workflow = workflowRepository.findById(id)
+        .orElseThrow(() -> new EntityNotFoundException("Workflow met id " + id + " niet gevonden"));
+
+    return WorkflowResponseDto.fromEntity(workflow);
+}
+
+OF met een WorkflowDto
+
+public record WorkflowResponseDto(
+    WorkflowDto workflow,
+    List<NodeDto> nodes,
+    List<EdgeDto> edges
+) {
+    public static WorkflowResponseDto fromEntity(Workflow wf) {
+        return new WorkflowResponseDto(
+            WorkflowDto.fromEntity(wf),
+            wf.getNodes().stream().map(NodeDto::fromEntity).toList(),
+            wf.getEdges().stream().map(EdgeDto::fromEntity).toList()
+        );
+    }
+}
+
+
+// In de RequestDto
+existingWorkflowDto.applyTo(existingEntity);
+workflowRepository.save(existingEntity);
+
+
+
+// Request DTO
+public record WorkflowRequestDto(
+    String name,
+    String description,
+    WorkflowMetadata metadata,
+    List<NodeDto> nodes,
+    List<EdgeDto> edges
+) {
+    public void applyTo(Workflow workflow) {
+        workflow.setName(this.name());
+        workflow.setDescription(this.description());
+        workflow.setMetadata(this.metadata());
+
+        workflow.clearChildren(); // evt. custom methode die nodes/edges leegt
+        workflow.setNodes(this.nodes().stream()
+            .map(NodeDto::toEntity)
+            .collect(Collectors.toList()));
+        workflow.setEdges(this.edges().stream()
+            .map(EdgeDto::toEntity)
+            .collect(Collectors.toList()));
+    }
+}
+
+
+
+// Frontend Update workflow
+const { id } = useParams(); // als je route `"/editor/:id"` is
+const isEditMode = Boolean(id);
+
+
+useEffect(() => {
+  if (isEditMode) {
+    fetch(`/api/workflows/${id}`)
+      .then((res) => res.json())
+      .then((data) => {
+        setWorkflowInfo(data.workflow);
+        setNodes(data.nodes);
+        setEdges(data.edges);
+      });
+  }
+}, [id]);
+
+
+
+const handleSave = async () => {
+  const payload = {
+    workflow: workflowInfo,
+    nodes,
+    edges
+  };
+
+  if (isEditMode) {
+    await axios.put(`/api/workflows/${id}`, payload);
+  } else {
+    await axios.post("/api/workflows", payload);
+  }
+
+// Editor page
+
+<SaveModal
+  open={isModalOpen}
+  onClose={handleClose}
+  onSave={handleSave}
+  workflowInfo={workflow}
+/>
+
+
+onSave({
+  ...workflow, // bestaande info (in edit mode)
+  ...formData, // overschrijft naam/desc/cat
+});
+
+
+
+const handleSave = (formData: FormData) => {
+  const payload = {
+    ...workflow,            // bevat id als het een bestaande workflow is
+    ...formData,            // bijgewerkte naam, description, etc.
+    nodes,
+    edges
+  };
+
+  if (workflow?.id) {
+    // UPDATE bestaande workflow
+    axios.put(`/api/workflows/${workflow.id}`, payload)
+      .then(() => toast.success("Workflow bijgewerkt"));
+  } else {
+    // NIEUWE workflow
+    axios.post("/api/workflows", payload)
+      .then(() => toast.success("Workflow aangemaakt"));
+  }
+};
+
+
+
+
+  // Geef feedback / sluit modal / navigeer terug
+};
+
