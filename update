@@ -1,0 +1,154 @@
+// AdminPage.tsx
+import { useNavigate } from "react-router-dom";
+
+const WorkflowCard = ({ workflow }: { workflow: WorkflowMap }) => {
+  const navigate = useNavigate();
+
+  const handleEdit = () => {
+    navigate(`/editor/${workflow.id}`); // 👈 Navigate met ID
+  };
+
+  return <Button onClick={handleEdit}>Edit</Button>;
+};
+
+
+
+// EditorPage.tsx
+import { useParams } from "react-router-dom";
+
+const EditorPage = () => {
+  const { id } = useParams();
+  const [workflowData, setWorkflowData] = useState<WorkflowMap | null>(null);
+
+  useEffect(() => {
+    if (id) {
+      axios.get(`/api/workflows/${id}`).then((res) => {
+        setWorkflowData(res.data);
+      });
+    }
+  }, [id]);
+
+  return (
+    <>
+      {workflowData && (
+        <Flow
+          nodes={workflowData.nodes}
+          edges={workflowData.edges}
+          workflow={workflowData}
+        />
+      )}
+    </>
+  );
+};
+
+
+// Flow.tsx
+<DragAndDropSidebar
+  onSave={handleSave}
+  workflow={workflow} // 👈 bestaande workflow
+/>
+
+
+// DragAndDropSidebar.tsx
+<SaveModal
+  open={modalOpen}
+  onClose={() => setModalOpen(false)}
+  onSubmit={handleModalSubmit}
+  workflow={workflow} // 👈 meegeven aan SaveModal
+/>
+
+
+// SaveModal.tsx
+const SaveModal = ({ open, onClose, onSubmit, workflow }: Props) => {
+  const [formData, setFormData] = useState({
+    name: "",
+    description: "",
+    category: "",
+  });
+
+  useEffect(() => {
+    if (workflow) {
+      setFormData({
+        name: workflow.name ?? "",
+        description: workflow.description ?? "",
+        category: workflow.metadata?.category ?? "",
+      });
+    }
+  }, [workflow]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSave = () => {
+    onSubmit({
+      id: workflow?.id, // 👈 bestaande ID meegeven
+      ...formData,
+    });
+    onClose();
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose}>
+      <DialogTitle>Workflow opslaan</DialogTitle>
+      <DialogContent>
+        <TextField
+          name="name"
+          label="Naam"
+          value={formData.name}
+          onChange={handleChange}
+          fullWidth
+        />
+        <TextField
+          name="description"
+          label="Beschrijving"
+          value={formData.description}
+          onChange={handleChange}
+          fullWidth
+        />
+        <TextField
+          name="category"
+          label="Categorie"
+          value={formData.category}
+          onChange={handleChange}
+          fullWidth
+        />
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Annuleren</Button>
+        <Button onClick={handleSave} variant="contained">Opslaan</Button>
+      </DialogActions>
+    </Dialog>
+  );
+};
+
+// Editor.tsx
+const handleWorkflowSave = async (formData: WorkflowFormData) => {
+  const payload = {
+    workflow: {
+      id: workflow?.id,
+      name: formData.name,
+      description: formData.description,
+      metadata: { category: formData.category }
+    },
+    nodes,
+    edges
+  };
+
+  if (workflow?.id) {
+    await axios.put(`/api/workflows/${workflow.id}`, payload);
+  } else {
+    await axios.post("/api/workflows", payload);
+  }
+};
+
+
+// DragAndDropSidebar.tsx
+<SaveModal
+  open={modalOpen}
+  onSubmit={handleWorkflowSave} // 👈 callback naar parent
+  workflow={workflow}
+/>
+
+
