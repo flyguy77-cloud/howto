@@ -1,31 +1,38 @@
-public record WorkflowResponseDto(
-    Long id,
-    String name,
-    String description,
-    WorkflowMetadata metadata,
+// WorkflowRequestDto.java
+public record WorkflowRequestDto(
+    WorkflowDto workflow,
     List<NodeDto> nodes,
     List<EdgeDto> edges
 ) {
-    public static WorkflowResponseDto fromEntity(Workflow workflow) {
-        List<NodeDto> nodeDtos = workflow.getNodes().stream()
-            .map(NodeDto::fromEntity)
-            .toList();
+    public void applyTo(Workflow entity) {
+        workflow.applyTo(entity);
+        entity.clearChildren(); // Orphan removal, als geconfigureerd
+        entity.setNodes(nodes.stream().map(NodeDto::toEntity).toList());
+        entity.setEdges(edges.stream().map(EdgeDto::toEntity).toList());
+    }
 
-        List<EdgeDto> edgeDtos = workflow.getEdges().stream()
-            .map(EdgeDto::fromEntity)
-            .toList();
-
-        return new WorkflowResponseDto(
-            workflow.getId(),
-            workflow.getName(),
-            workflow.getDescription(),
-            workflow.getMetadata(),
-            nodeDtos,
-            edgeDtos
-        );
+    public Workflow toEntity() {
+        Workflow entity = new Workflow();
+        applyTo(entity);
+        return entity;
     }
 }
 
+// WorkflowDto.java
+public record WorkflowDto(
+    Long id,
+    String name,
+    String description,
+    WorkflowMetadata metadata
+) {
+    public void applyTo(Workflow entity) {
+        entity.setName(name);
+        entity.setDescription(description);
+        entity.setMetadata(metadata);
+    }
+}
+
+// NodeDto.java
 public record NodeDto(
     String nodeId,
     String type,
@@ -34,85 +41,47 @@ public record NodeDto(
     double positionY,
     NodeData data
 ) {
-    public static NodeDto fromEntity(Node node) {
-        return new NodeDto(
-            node.getNodeId(),
-            node.getType(),
-            node.getLabel(),
-            node.getPositionX(),
-            node.getPositionY(),
-            node.getData()
-        );
+    public Node toEntity() {
+        return new Node(nodeId, type, label, positionX, positionY, data);
     }
 }
 
+// EdgeDto.java
 public record EdgeDto(
     String edgeId,
     String source,
     String target,
     String label
 ) {
-    public static EdgeDto fromEntity(Edge edge) {
-        return new EdgeDto(
-            edge.getEdgeId(),
-            edge.getSource(),
-            edge.getTarget(),
-            edge.getLabel()
-        );
+    public Edge toEntity() {
+        return new Edge(edgeId, source, target, label);
     }
 }
 
-@Override
-public WorkflowResponseDto getWorkflowById(Long id) {
-    Workflow workflow = workflowRepository.findById(id)
-        .orElseThrow(() -> new EntityNotFoundException("Workflow met id " + id + " niet gevonden"));
+// WorkflowServiceImpl.java
+@Service
+@RequiredArgsConstructor
+public class WorkflowServiceImpl implements WorkflowService {
 
-    return WorkflowResponseDto.fromEntity(workflow);
-}
+    private final WorkflowRepository workflowRepository;
 
-OF met een WorkflowDto
-
-public record WorkflowResponseDto(
-    WorkflowDto workflow,
-    List<NodeDto> nodes,
-    List<EdgeDto> edges
-) {
-    public static WorkflowResponseDto fromEntity(Workflow wf) {
-        return new WorkflowResponseDto(
-            WorkflowDto.fromEntity(wf),
-            wf.getNodes().stream().map(NodeDto::fromEntity).toList(),
-            wf.getEdges().stream().map(EdgeDto::fromEntity).toList()
-        );
+    @Override
+    @Transactional
+    public WorkflowResponseDto saveWorkflow(WorkflowRequestDto dto) {
+        Workflow workflow = dto.toEntity();
+        Workflow saved = workflowRepository.save(workflow);
+        return WorkflowResponseDto.fromEntity(saved);
     }
-}
 
+    @Override
+    @Transactional
+    public WorkflowResponseDto updateWorkflow(Long id, WorkflowRequestDto dto) {
+        Workflow existing = workflowRepository.findById(id)
+            .orElseThrow(() -> new EntityNotFoundException("Workflow met id " + id + " niet gevonden"));
 
-// In de RequestDto
-existingWorkflowDto.applyTo(existingEntity);
-workflowRepository.save(existingEntity);
-
-
-
-// Request DTO
-public record WorkflowRequestDto(
-    String name,
-    String description,
-    WorkflowMetadata metadata,
-    List<NodeDto> nodes,
-    List<EdgeDto> edges
-) {
-    public void applyTo(Workflow workflow) {
-        workflow.setName(this.name());
-        workflow.setDescription(this.description());
-        workflow.setMetadata(this.metadata());
-
-        workflow.clearChildren(); // evt. custom methode die nodes/edges leegt
-        workflow.setNodes(this.nodes().stream()
-            .map(NodeDto::toEntity)
-            .collect(Collectors.toList()));
-        workflow.setEdges(this.edges().stream()
-            .map(EdgeDto::toEntity)
-            .collect(Collectors.toList()));
+        dto.applyTo(existing);
+        Workflow updated = workflowRepository.save(existing);
+        return WorkflowResponseDto.fromEntity(updated);
     }
 }
 
