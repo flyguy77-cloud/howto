@@ -1,3 +1,23 @@
+private List<Node> nodes = new ArrayList<>();
+
+============
+workflow.setNodes(new ArrayList<>());
+
+this.nodes() != null 
+  ? this.nodes().stream().map(NodeDto::toEntity).toList() 
+  : List.of(); // <- veilige fallback
+
+===========
+public record WorkflowDto(
+  String name,
+  List<NodeDto> nodes // ← die je dan opbouwt met List.of(...)
+)
+
+workflow.setNodes(new ArrayList<>(this.nodes().stream()
+    .map(NodeDto::toEntity)
+    .toList()));
+
+=========
 // WorkflowRequestDto.java
 public record WorkflowRequestDto(
     WorkflowDto workflow,
