@@ -1,0 +1,66 @@
+// 1. DTO – GitLabFileDto.java
+public record GitLabFileDto(String name, String path) {}
+
+// 2. Service – GitLabService.java
+public interface GitLabService {
+    List<GitLabFileDto> getFiles(String projectPath);
+}
+
+// 3. ServiceImpl – GitLabServiceImpl.java
+@Service
+public class GitLabServiceImpl implements GitLabService {
+
+    private final GitLabApi gitLabApi;
+
+    public GitLabServiceImpl() {
+        this.gitLabApi = new GitLabApi("https://gitlab.example.com", "ACCESS_TOKEN");
+    }
+
+    @Override
+    public List<GitLabFileDto> getFiles(String projectPath) {
+        try {
+            RepositoryApi repoApi = gitLabApi.getRepositoryApi();
+            List<RepositoryTree> tree = repoApi.getTree(projectPath, "main", "/", false);
+
+            return tree.stream()
+                .filter(item -> "blob".equals(item.getType()))
+                .map(item -> new GitLabFileDto(item.getName(), item.getPath()))
+                .toList();
+
+        } catch (GitLabApiException e) {
+            throw new RuntimeException("GitLab ophalen mislukt", e);
+        }
+    }
+}
+
+// 4. Controller – GitLabController.java
+@RestController
+@RequestMapping("/api/gitlab")
+public class GitLabController {
+
+    private final GitLabService gitLabService;
+
+    public GitLabController(GitLabService gitLabService) {
+        this.gitLabService = gitLabService;
+    }
+
+    @GetMapping("/files")
+    public ResponseEntity<List<GitLabFileDto>> getFiles(@RequestParam String project) {
+        List<GitLabFileDto> files = gitLabService.getFiles(project);
+        return ResponseEntity.ok(files);
+    }
+}
+
+// Ophalen uit project
+GitLabApi gitLabApi = new GitLabApi("https://gitlab.example.com", "ACCESS_TOKEN");
+RepositoryApi repositoryApi = gitLabApi.getRepositoryApi();
+
+List<RepositoryTree> files = repositoryApi.getTree("group/project", "main", "/", false);
+
+// filteren op file extensies
+List<String> fileNames = files.stream()
+    .filter(item -> "blob".equals(item.getType())) // blobs = bestanden
+    .filter(item -> item.getName().endsWith(".sh"))
+    .map(RepositoryTree::getName)
+    .toList();
+
