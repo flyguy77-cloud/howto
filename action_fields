@@ -58,3 +58,51 @@ export type FieldDefinition = {
 };
 
 type FieldOptions = { label: string; value: string }[];  <------------- !
+
+
+// BaseNode
+import { useEffect, useState } from "react";
+
+export const BaseNode = ({ node, updateNodeData }) => {
+  const [scriptOptions, setScriptOptions] = useState([]);
+
+  useEffect(() => {
+    const loadOptions = async () => {
+      const field = nodeRegistry[node.type]?.fields?.find(f => f.name === "script");
+
+      if (field && typeof field.options === "function") {
+        const opts = await field.options(node.data); // async ophalen van opties
+        setScriptOptions(opts); // lokale state voor opties
+      }
+    };
+
+    if (node.data.actions?.source) {
+      loadOptions(); // Alleen ophalen als 'source' aanwezig is
+    }
+  }, [node.data.actions?.source, node.type]);
+
+  return (
+    <>
+      <select
+        value={node.data.actions?.source || ""}
+        onChange={(e) =>
+          updateNodeData({ ...node.data, actions: { ...node.data.actions, source: e.target.value } })
+        }
+      >
+        <option value="local">Local</option>
+        <option value="gitlab">GitLab</option>
+      </select>
+
+      <select
+        value={node.data.script || ""}
+        onChange={(e) => updateNodeData({ ...node.data, script: e.target.value })}
+      >
+        {scriptOptions.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    </>
+  );
+};
