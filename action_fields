@@ -1,0 +1,60 @@
+// NodeRegistry
+
+import { useGetGitlabFiles } from "@/api/gitlabApi";
+
+export const nodeRegistry = {
+  loadscript: {
+    type: "loadscript",
+    label: "Laad Script",
+    actions: [
+      {
+        name: "source",
+        type: "select",
+        options: ["local", "gitlab"]
+      }
+    ],
+    fields: [
+      {
+        name: "script",
+        type: "select",
+        options: async (nodeData) => {        <---------------- !
+          if (nodeData.actions?.source === "gitlab") {
+            const files = await useGetGitlabFiles();
+            return files.map(file => ({  <---------------- ?
+              label: file.name,
+              value: file.path
+            }));
+          } else {
+            return [
+              { label: "init.sh", value: "init.sh" },
+              { label: "backup.sh", value: "backup.sh" }
+            ];
+          }
+        }
+      }
+    ]
+  }
+};
+
+
+// NodeTypes
+export type NodeDefinition = {
+  type: string;
+  label: string;
+  actions?: ActionField[];
+  fields?: FieldDefinition[];
+};
+
+export type ActionField = {
+  name: string;
+  type: "select" | "input";
+  options: string[];
+};
+
+export type FieldDefinition = {
+  name: string;
+  type: "select" | "input";
+  options: FieldOptions | (() => Promise<FieldOptions>); <--------------- !
+};
+
+type FieldOptions = { label: string; value: string }[];  <------------- !
