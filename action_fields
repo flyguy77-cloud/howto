@@ -1,26 +1,83 @@
-// nodeRegistry
-export type NodeField = {
-  name: string;
-  type: "select" | "text" | "number"; // of wat je ondersteunt
-  options?: Option[] | ((nodeData: NodeData) => Promise<Option[]>);
+// noderegistry
+import { BaseNodeDefinition } from "@/types/BaseNodeTypes";
+
+export const nodeRegistry: Record<string, BaseNodeDefinition> = {
+  loadscript: {
+    type: "loadscript",
+    label: "Laad Script",
+    actions: [
+      {
+        name: "source",
+        type: "select",
+        options: ["local", "gitlab"]
+      }
+    ],
+    fields: [
+      {
+        name: "script",
+        type: "select",
+        options: [] // Wordt dynamisch gevuld in BaseNode
+      }
+    ]
+  }
 };
 
-export type NodeAction = {
-  name: string;
-  type: "select" | "button";
-  options?: string[];
-  onSelect?: (value: string, nodeData: NodeData) => void; // om modal te openen etc.
+
+// BaseNode
+import React, { useState, useEffect } from "react";
+import ScriptSelectModal, { ScriptFile } from "./ScriptSelectModal";
+import { useGetGitlabFiles } from "@/api/useGetGitlabFiles";
+
+const BaseNode = ({ nodeData, updateNodeData }: any) => {
+  const [modalOpen, setModalOpen] = useState(false);
+  const [files, setFiles] = useState<ScriptFile[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (nodeData.actions?.source === "gitlab") {
+      openModal();
+    }
+  }, [nodeData.actions?.source]);
+
+  const openModal = async () => {
+    setLoading(true);
+    const result = await useGetGitlabFiles();
+    setFiles(result);
+    setLoading(false);
+    setModalOpen(true);
+  };
+
+  const handleScriptSelect = (file: ScriptFile) => {
+    updateNodeData({
+      ...nodeData,
+      script: file.path
+    });
+    setModalOpen(false);
+  };
+
+  return (
+    <>
+      <div>
+        <strong>{nodeData.label || "Load Script Node"}</strong>
+        <div>Bron: {nodeData.actions?.source}</div>
+        <div>Script: {nodeData.script || "Geen gekozen"}</div>
+      </div>
+
+      <ScriptSelectModal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onSelect={handleScriptSelect}
+        files={files}
+        loading={loading}
+      />
+    </>
+  );
 };
 
-export type BaseNodeType = {
-  type: string;
-  label: string;
-  actions?: NodeAction[];
-  fields?: NodeField[];
-};
+export default BaseNode;
 
 
-//ScriptSelectModal
+// Modal
 import React from "react";
 import {
   Dialog,
@@ -35,6 +92,12 @@ import {
   CircularProgress
 } from "@mui/material";
 
+export type ScriptFile = {
+  id: string;
+  name: string;
+  path: string;
+};
+
 type Props = {
   open: boolean;
   onClose: () => void;
@@ -43,16 +106,10 @@ type Props = {
   loading: boolean;
 };
 
-export type ScriptFile = {
-  id: string;
-  name: string;
-  path: string;
-};
-
 const ScriptSelectModal = ({ open, onClose, onSelect, files, loading }: Props) => {
   return (
     <Dialog open={open} onClose={onClose} fullWidth>
-      <DialogTitle>Kies een script uit GitLab</DialogTitle>
+      <DialogTitle>GitLab Script kiezen</DialogTitle>
       <DialogContent>
         {loading ? (
           <CircularProgress />
@@ -76,58 +133,3 @@ const ScriptSelectModal = ({ open, onClose, onSelect, files, loading }: Props) =
 };
 
 export default ScriptSelectModal;
-
-
-// BaseNode.tsx
-const [modalOpen, setModalOpen] = useState(false);
-const [files, setFiles] = useState<ScriptFile[]>([]);
-const [loading, setLoading] = useState(false);
-
-// activeren vanuit node actieregel:
-const openModal = async () => {
-  setLoading(true);
-  const files = await useGetGitlabFiles(); // jouw axios call
-  setFiles(files);
-  setLoading(false);
-  setModalOpen(true);
-};
-
-// bij selectie
-const handleScriptSelect = (file: ScriptFile) => {
-  updateNodeData({ script: file.path }); // of waar je het opslaat
-  setModalOpen(false);
-};
-
-
-// nodeRegistry
-actions: [
-  {
-    name: "source",
-    type: "select",
-    options: ["local", "gitlab"],
-    onSelect: (value, nodeData) => {
-      if (value === "gitlab") {
-        openModal(); // deze moet je aan je BaseNode injecteren
-      }
-    }
-  }
-]
-
-// src/features/nodes/loadScript/loadScriptNode.ts
-export const loadScriptNodeDef: BaseNodeType = {
-  type: "loadscript",
-  label: "Load Script",
-  actions: [...],
-  fields: [...]
-};
-
-
-import { loadScriptNodeDef } from "@/features/nodes/loadScript/loadScriptNode";
-import { runScriptNodeDef } from "@/features/nodes/runScript/runScriptNode";
-// etc.
-
-export const nodeRegistry: Record<string, BaseNodeType> = {
-  loadscript: loadScriptNodeDef,
-  runscript: runScriptNodeDef,
-  ...
-};
