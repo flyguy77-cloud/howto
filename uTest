@@ -1,0 +1,100 @@
+// Configuration
+@Configuration
+public class GitLabConfig {
+
+    @Value("${gitlab.url}")
+    private String gitlabUrl;
+
+    @Value("${gitlab.token}")
+    private String gitlabToken;
+
+    @Bean
+    public GitLabApi gitLabApi() {
+        return new GitLabApi(gitlabUrl, gitlabToken);
+    }
+}
+
+of,
+
+@Configuration
+public class GitLabConfig {
+    @Bean
+    public GitLabApi gitLabApi(@Value("${gitlab.url}") String url,
+                               @Value("${gitlab.token}") String token) {
+        return new GitLabApi(url, token);
+    }
+}
+
+
+// Service
+@Service
+public class GitLabServiceImpl implements GitLabService {
+
+    private final GitLabApi gitLabApi;
+
+    // Je injecteert hier direct een kant-en-klare GitLabApi instantie
+    public GitLabServiceImpl(GitLabApi gitLabApi) {
+        this.gitLabApi = gitLabApi;
+    }
+
+    // methods die gitLabApi gebruiken
+}
+
+// Test
+@ExtendWith(MockitoExtension.class)
+class GitLabServiceImplTest {
+
+    @Mock
+    private GitLabApi mockGitLabApi;
+
+    @InjectMocks
+    private GitLabServiceImpl gitLabService;
+
+    @Test
+    void testGetScriptsFromGitLab() throws Exception {
+        // Arrange
+        List<TreeItem> items = List.of(new TreeItem().withName("script.sh").withPath("script.sh"));
+        when(mockGitLabApi.getRepositoryApi().getTree(anyString())).thenReturn(items);
+
+        // Act
+        List<GitLabScriptFile> files = gitLabService.getScriptFiles("project-123");
+
+        // Assert
+        assertEquals(1, files.size());
+        assertEquals("script.sh", files.get(0).name());
+    }
+
+Of
+
+// GitLabFactory interface
+public interface GitLabApiFactory {
+    GitLabApi create();
+}
+
+@Component
+public class DefaultGitLabApiFactory implements GitLabApiFactory {
+
+    @Value("${gitlab.url}")
+    private String gitlabUrl;
+
+    @Value("${gitlab.token}")
+    private String gitlabToken;
+
+    @Override
+    public GitLabApi create() {
+        return new GitLabApi(gitlabUrl, gitlabToken);
+    }
+}
+
+@Service
+public class GitLabServiceImpl implements GitLabService {
+
+    private final GitLabApi gitLabApi;
+
+    public GitLabServiceImpl(GitLabApiFactory gitLabApiFactory) {
+        this.gitLabApi = gitLabApiFactory.create();
+    }
+
+    // Je methods hier...
+}
+}
