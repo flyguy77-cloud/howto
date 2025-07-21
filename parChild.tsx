@@ -1,3 +1,35 @@
+const updateField = (key: string, newValue: any) => {
+  setNodes((nodes) =>
+    nodes.map((node) => {
+      if (node.id !== selectedNodeId) return node;
+
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          fields: {
+            ...node.data.fields,
+            integration: {
+              ...node.data.fields?.integration,
+              gitlab: {
+                ...node.data.fields?.integration?.gitlab,
+                [key]: newValue, // Bijvoorbeeld: key = "file", value = { id, name, path }
+              },
+            },
+          },
+        },
+      };
+    })
+  );
+};
+
+onSelect={(file) => {
+  updateField("file", file); // Alleen dit!
+  setModalOpen(false);
+}}
+
+
+
 // parent
 const [modalOpen, setModalOpen] = useState(false);
 const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
