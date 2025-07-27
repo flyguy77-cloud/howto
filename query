@@ -1,0 +1,23 @@
+import { useQueryClient } from '@tanstack/react-query';
+
+const queryClient = useQueryClient();
+
+const handleCreateWorkflow = async () => {
+  await createWorkflow(); // je post request
+  queryClient.invalidateQueries({ queryKey: ['workflows', userId] }); // refetch
+};
+
+
+const { data: workflows, isLoading } = useQuery({
+  queryKey: ['workflows', userId], // dynamische key
+  queryFn: () => fetchWorkflows(userId), // haal op op basis van userId
+  enabled: !!userId, // voorkomt fetch bij null
+});
+
+const { data } = useQuery({
+  queryKey: ['workflow', workflowId],
+  queryFn: ({ queryKey }) => {
+    const [_key, id] = queryKey;
+    return axios.get(`/api/workflows/${id}`).then(res => res.data);
+  }
+});
