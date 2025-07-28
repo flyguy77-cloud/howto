@@ -11,10 +11,25 @@ const getAllWorkflows = async (): Promise<WorkflowMap | undefined> => {
 const data = await getAllWorkflows();
 
 if (data) {
-  setWorkflows(data); // ✅ TS weet: dit is een WorkflowMap
+  setWorkflows(data); // TS weet: dit is een WorkflowMap
 } else {
   console.warn("Geen workflows beschikbaar.");
 }
+
+
+// typing
+type WorkflowMetadata = {
+  id: UUID;
+  name: string;
+};
+
+type WorkflowBundle = {
+  workflow: WorkflowMetadata;
+  nodes: Node[];
+  edges: Edge[];
+};
+
+
 
 
 import { useQueryClient } from '@tanstack/react-query';
