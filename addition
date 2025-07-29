@@ -1,0 +1,124 @@
+Denkmodel voor de RunScript Node
+
+De node moet:
+	1.	Weten welke LoadScript nodes eraan gekoppeld zijn
+	2.	De GitLab file info van die nodes ophalen (id, path, etc)
+	3.	Van elk script de content ophalen via backend
+	4.	De scripts op volgorde uitvoeren (straks in backend)
+	5.	Variabelen injecteren per script
+
+⸻
+
+Stap-voor-stap aanpak
+
+Stap 1 – Relaties definiëren tussen nodes
+
+Voeg in je RunScript node data toe:
+
+{
+  linkedNodes: string[]; // Array van node.id's van gekoppelde LoadScript nodes
+  variables: Record<string, string>; // Globale vars eventueel
+}
+
+Je kunt dit eventueel selecteerbaar maken via een multi-select UI in de node.
+
+⸻
+
+Stap 2 – Backend API maken om script content van LoadScript nodes op te halen
+
+Bijv.:
+
+POST /api/gitlab/scripts/content
+
+Body:
+
+{
+  "scripts": [
+    { "id": "abc", "path": "scripts/install.sh" },
+    { "id": "def", "path": "scripts/configure.sh" }
+  ]
+}
+
+Respons:
+
+[
+  { "name": "install.sh", "content": "#!/bin/bash\necho install" },
+  { "name": "configure.sh", "content": "#!/bin/bash\necho config" }
+]
+
+
+⸻
+
+Stap 3 – In de frontend logica van RunScript node verwerken
+
+Schrijf in je BaseNode-logica of aparte RunScriptNode.tsx:
+	1.	Bij openen van de node:
+	•	Lees linkedNodes
+	•	Zoek in de canvas state de nodes met die ID’s
+	•	Verzamel hun file.path en file.projectId
+	•	Roep de backend aan om hun content op te halen
+	2.	Bewaar deze scripts (optioneel in node.data.cache) om opnieuw op te halen bij het runnen
+
+⸻
+
+Stap 4 – Script op volgorde uitvoeren (later in backend)
+
+In de backend komt straks een endpoint:
+
+POST /api/workflows/execute
+
+Met payload:
+
+{
+  "workflowId": 123,
+  "scripts": [
+    {
+      "order": 1,
+      "path": "install.sh",
+      "content": "...",
+      "variables": { "ENV": "dev" }
+    },
+    ...
+  ]
+}
+
+Je kunt de uitvoer op de backend serialiseren per script, en later zelfs een logsysteem maken.
+
+⸻
+
+Stap 5 – Variabelen per script injecteren
+
+Maak per LoadScript node ruimte voor variabelen:
+
+data.fields.integration.gitlab.variables = {
+  ENV: "dev",
+  REGION: "eu-west"
+}
+
+De RunScript node leest deze per gekoppelde node uit, en stuurt dit mee naar backend.
+
+⸻
+
+Structuur in Code (aanbevolen)
+
+nodes/
+ ┣ 📄 RunScriptNode.tsx   ← UI + logica voor deze node
+ ┣ 📄 useLoadScriptContent.ts   ← hook die content ophaalt van meerdere nodes
+ ┣ 📄 useLinkedNodes.ts         ← hook die nodes uit canvas haalt op basis van linkedNodeIds
+
+
+⸻
+
+Tot slot: houd het licht en uitbreidbaar
+
+Je hoeft niet alles tegelijk te doen. Begin met:
+	•	Gekoppelde nodes opslaan
+	•	Files tonen van die nodes
+	•	Content ophalen en tonen
+
+En voeg daarna:
+	•	Variabelen
+	•	Content preview
+	•	Execution API
+
+… stap voor stap toe.
