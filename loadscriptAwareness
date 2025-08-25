@@ -1,0 +1,147 @@
+Hoofddoel
+
+De RunScript-node moet:
+Weten welke LoadScript-nodes eraan gekoppeld zijn
+→ via edges op de canvas.
+Script-informatie ophalen
+→ script id, name, path van LoadScript-node.
+Script-content ophalen
+→ via backend, maar niet tonen.
+Variabelen kunnen injecteren
+→ per gekoppelde node custom variabelen opslaan.
+Alles opslaan in node.data
+→ zodat later backend-executie makkelijk wordt.
+ 
+
+Eerste stappen
+
+Stap 1 — Maak de RunScript-node “aware” van zijn gekoppelde nodes
+
+Je hebt in je canvas een state met nodes en edges.
+We gebruiken reactflow → useReactFlow() om edges op te vragen.
+import { useReactFlow } from "reactflow";
+
+const useLinkedLoadScripts = (runScriptNodeId: string) => {
+  const { getEdges, getNodes } = useReactFlow();
+
+  return React.useMemo(() => {
+    // Zoek alle edges waar de RunScript-node de target is
+    const linkedEdges = getEdges().filter(
+      (edge) => edge.target === runScriptNodeId
+    );
+
+    // Haal de gekoppelde LoadScript-nodes op
+    return getNodes().filter((node) =>
+      linkedEdges.some((edge) => edge.source === node.id && node.type === "loadscript")
+    );
+  }, [getEdges, getNodes, runScriptNodeId]);
+};
+
+Resultaat:
+De hook useLinkedLoadScripts(runScriptNodeId) geeft je alle gekoppelde LoadScript-nodes terug.
+ 
+
+Stap 2 — Script-informatie uit die nodes halen
+
+Elke LoadScript-node bevat in node.data.fields.integration.gitlab.file de info over het script:
+const linkedScripts = linkedLoadScriptNodes.map((node) => ({
+  id: node.data.fields.integration.gitlab.file.id,
+  name: node.data.fields.integration.gitlab.file.name,
+  path: node.data.fields.integration.gitlab.file.path,
+}));
+Deze lijst van scripts kun je nu opslaan in je RunScript-node via je bestaande updateField-functie:
+updateField("linkedScripts", linkedScripts);
+ 
+
+Stap 3 — Backend endpoint voor content ophalen
+
+Maak in je backend een endpoint om meerdere scripts in één call op te halen:
+POST /api/gitlab/scripts/content
+
+Request body:
+{
+  "scripts": [
+    { "id": "123", "path": "scripts/setup.sh" },
+    { "id": "456", "path": "scripts/deploy.sh" }
+  ]
+}
+
+Response:
+[
+  {
+    "id": "123",
+    "name": "setup.sh",
+    "content": "#!/bin/bash\necho setup"
+  },
+  {
+    "id": "456",
+    "name": "deploy.sh",
+    "content": "#!/bin/bash\necho deploy"
+  }
+]
+ 
+
+Stap 4 — Script-content ophalen in RunScript-node (onzichtbaar)
+
+Maak een hook useFetchScriptContents:
+const useFetchScriptContents = (scripts: { id: string; path: string }[]) => {
+  const [loading, setLoading] = React.useState(false);
+  const [contents, setContents] = React.useState([]);
+
+  React.useEffect(() => {
+    if (!scripts.length) return;
+
+    const fetchContent = async () => {
+      setLoading(true);
+      try {
+        const res = await client.post("/api/gitlab/scripts/content", { scripts });
+        setContents(res.data);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchContent();
+  }, [scripts]);
+
+  return { contents, loading };
+};
+Je kunt deze hook gebruiken in de RunScript-node om stilletjes de script-content alvast te cachen.
+ 
+
+Stap 5 — Variabelen per script injecteren
+
+In je RunScript-node UI kun je voor elk gekoppeld script een variabelenformulier maken:
+updateField("variables", {
+  [scriptId]: { ENV: "prod", REGION: "eu-west" }
+});
+Deze variabelen stuur je later samen met het script mee naar de backend-executie.
+ 
+
+Structuur in node.data
+
+Voor een RunScript-node ziet node.data er straks zo uit:
+data: {
+  linkedScripts: [
+    { id: "123", name: "setup.sh", path: "scripts/setup.sh" },
+    { id: "456", name: "deploy.sh", path: "scripts/deploy.sh" }
+  ],
+  scriptContents: [
+    { id: "123", content: "#!/bin/bash\necho setup" },
+    { id: "456", content: "#!/bin/bash\necho deploy" }
+  ],
+  variables: {
+    "123": { ENV: "prod" },
+    "456": { ENV: "staging" }
+  }
+}
+ 
+
+Aanbevolen volgorde
+
+Awareness → hook maken om LoadScript-nodes te vinden
+LinkedScripts opslaan → naam, id, path in RunScript-node.data
+Content ophalen → backend endpoint + hook
+Variabelen injecteren → eenvoudige UI per gekoppeld script
+Script-executie later → backend orchestration
+ 
