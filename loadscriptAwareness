@@ -13,7 +13,7 @@ Alles opslaan in node.data
 → zodat later backend-executie makkelijk wordt.
  
 
-Eerste stappen
+**Eerste stappen**
 
 Stap 1 — Maak de RunScript-node “aware” van zijn gekoppelde nodes
 
