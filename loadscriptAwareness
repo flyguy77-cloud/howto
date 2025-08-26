@@ -1,3 +1,138 @@
+🔹 Doelstelling
+	1.	Scenario: Workflow wordt opnieuw geladen in het canvas.
+	2.	Elke LoadScript-node bevat een opgeslagen GitLab-script (id, name, path).
+	3.	Je wilt bij het laden controleren:
+	•	Bestaat het script nog in GitLab?
+	•	Zo niet, toon een visuele waarschuwing in de node.
+	4.	Je hebt al:
+	•	GET /api/gitlab/files → lijst met alle scripts
+	•	GET /api/gitlab/file/:id → metadata + content van één script
+
+⸻
+
+🔹 Aanpak
+
+Stap 1 — Validatieveld toevoegen aan de LoadScript-node
+
+We voegen een nieuw veld aan node.data toe, bijvoorbeeld:
+
+data: {
+  fields: {
+    integration: {
+      gitlab: {
+        file: {
+          id: "123",
+          name: "setup.sh",
+          path: "scripts/setup.sh"
+        },
+        valid: true,      // ✅ default: geldig
+        missing: false    // ❌ wordt true als file niet meer bestaat
+      }
+    }
+  }
+}
+
+
+⸻
+
+Stap 2 — Validatiehook voor GitLab-files
+
+We maken een hook die alle scripts uit GitLab ophaalt en gebruikt om de validatie te doen:
+
+import { useQuery } from "@tanstack/react-query";
+import client from "../api/client";
+
+export const useValidateGitlabFiles = (nodes: Node[]) => {
+  const { data: gitlabFiles = [], isLoading } = useQuery({
+    queryKey: ["gitlab-files"],
+    queryFn: async () => {
+      const res = await client.get("/api/gitlab/files");
+      return res.data; // array met { id, name, path }
+    },
+    staleTime: 60000 // cache 1 min
+  });
+
+  const invalidNodes = nodes
+    .filter((node) => node.type === "loadscript")
+    .filter((node) => {
+      const file = node.data.fields?.integration?.gitlab?.file;
+      return file && !gitlabFiles.some((f: any) => f.id === file.id);
+    });
+
+  return { invalidNodes, gitlabFiles, isLoading };
+};
+
+
+⸻
+
+Stap 3 — Integratie in je canvas of editorpagina
+
+In je Editor-pagina waar je de workflow laadt:
+
+const { invalidNodes, isLoading } = useValidateGitlabFiles(nodes);
+
+useEffect(() => {
+  if (!isLoading && invalidNodes.length > 0) {
+    invalidNodes.forEach((node) => {
+      console.warn(
+        `Script ${node.data.fields.integration.gitlab.file.name} ontbreekt in GitLab`
+      );
+    });
+  }
+}, [invalidNodes, isLoading]);
+
+
+⸻
+
+Stap 4 — Visuele feedback in de LoadScript-node
+
+Pas je LoadScriptNode.tsx aan om visueel te laten zien dat het script ontbreekt:
+
+export const LoadScriptNode = ({ data }) => {
+  const file = data.fields.integration.gitlab.file;
+  const isMissing = data.fields.integration.gitlab.missing;
+
+  return (
+    <div style={{ border: isMissing ? "2px solid red" : "1px solid gray" }}>
+      <h4>Load Script</h4>
+      {file ? (
+        <>
+          <div>📄 {file.name}</div>
+          {isMissing && <span style={{ color: "red" }}>Script ontbreekt in GitLab!</span>}
+        </>
+      ) : (
+        <span style={{ color: "gray" }}>Geen script geselecteerd</span>
+      )}
+    </div>
+  );
+};
+
+
+⸻
+
+Stap 5 — Automatisch updaten van de node-status
+
+Wanneer een script ontbreekt, kun je via je bestaande updateField-methode automatisch het missing-veld op true zetten:
+
+invalidNodes.forEach((node) => {
+  updateField(node.id, "fields.integration.gitlab.missing", true);
+});
+
+
+⸻
+
+🔹 Samenvattend
+
+Stap	Wat je doet	Resultaat
+1. Node uitbreiden	missing of valid flag toevoegen	Node kan status opslaan
+2. Hook maken	useValidateGitlabFiles(nodes)	Controleert of files bestaan
+3. Integreren	In Editor gebruiken	Automatische validatie bij load
+4. UI aanpassen	Rode warning / errorborder bij ontbrekend script	Direct visueel inzicht
+5. State updaten	updateField gebruiken	Node-data blijft synchroon
+
+
+---------
+
 Hoofddoel
 
 De RunScript-node moet:
