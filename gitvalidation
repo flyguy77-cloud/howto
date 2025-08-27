@@ -133,14 +133,139 @@ Typing	Impliciet / any	Volledig getypeerd
 Trigger	Handmatig	Automatisch via useEffect
 
 
+⸻--------------------------------------------------------
+
+1. Verplaats de validatie zelf ook naar de hook
+
+Je hebt nu de useEffect in de Editor.tsx staan.
+Beter is om de hook volledig verantwoordelijk te maken voor het updaten van present, zodat de Editor “dom” blijft.
+
+Aangepaste hook
+
+// hooks/useValidateGitlabFiles.ts
+import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
+import client from "../api/client";
+import { Node } from "@xyflow/react";
+
+type GitlabFile = {
+  id: string;
+  name: string;
+  path: string;
+};
+
+export const useValidateGitlabFiles = (
+  nodes: Node[],
+  setNodes: React.Dispatch<React.SetStateAction<Node[]>>
+) => {
+  // 1. Haal bestanden op
+  const { data: gitlabFiles = [], isLoading } = useQuery<GitlabFile[]>({
+    queryKey: ["gitlab-files"],
+    queryFn: async () => {
+      const res = await client.get("/api/gitlab/files");
+      return res.data;
+    },
+    staleTime: 60000,
+  });
+
+  // 2. Valideer automatisch bij nieuwe data
+  useEffect(() => {
+    if (!gitlabFiles) return;
+
+    setNodes((prevNodes) =>
+      prevNodes.map((node) => {
+        if (node.type !== "loadscript") return node;
+
+        const file = node.data?.fields?.integration?.gitlab?.file;
+
+        // Als er geen file gekozen is → altijd invalid
+        if (!file || !file.id) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              fields: {
+                ...node.data.fields,
+                integration: {
+                  ...node.data.fields.integration,
+                  gitlab: {
+                    ...node.data.fields.integration.gitlab,
+                    file: { ...(file || {}), present: false },
+                  },
+                },
+              },
+            },
+          };
+        }
+
+        // Als file-id niet voorkomt in GitLab → invalid
+        const exists = gitlabFiles.some((f) => f.id === file.id);
+
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            fields: {
+              ...node.data.fields,
+              integration: {
+                ...node.data.fields.integration,
+                gitlab: {
+                  ...node.data.fields.integration.gitlab,
+                  file: { ...file, present: exists },
+                },
+              },
+            },
+          },
+        };
+      })
+    );
+  }, [gitlabFiles, setNodes]);
+
+  return { gitlabFiles, isLoading };
+};
+
+
+⸻
+
+2. Editor.tsx wordt simpeler
+
+const { nodes, setNodes } = useReactFlow();
+
+const { gitlabFiles, isLoading } = useValidateGitlabFiles(nodes, setNodes);
+
+// Geen extra useEffect meer nodig
+
+
+⸻
+
+3. BaseNode.tsx toont validatie
+
+const file = node.data.fields.integration.gitlab.file;
+
+return (
+  <Box>
+    <Typography variant="body2">{file?.name || "Geen script geselecteerd"}</Typography>
+
+    {!file?.present && (
+      <Typography color="error" variant="caption">
+        ❌ Script bestaat niet meer in GitLab
+      </Typography>
+    )}
+  </Box>
+);
+
+
+⸻
+
+4. Voordelen van deze aanpak
+	•	Editor.tsx is “dom” → geen logica meer.
+	•	Hook doet alles → ophalen + valideren + state bijwerken.
+	•	BaseNode toont alleen UI-feedback.
+	•	Het wordt eenvoudiger om later dezelfde validatie ook bij save of workflow reload toe te passen.
+
 ⸻
 
 Volgende stap
 
-We kunnen nu in BaseNode.tsx de present-status visueel tonen.
-Bijvoorbeeld: als present === false, geef je een rode waarschuwing onder de node.
-
-⸻
-
-Wil je dat ik in de BaseNode meteen laat zien hoe je de visuele validatie toevoegt, zodat een loadscript-node rood markeert wanneer het gekozen script niet meer bestaat?
-Dat maakt dit hele flow compleet. Zal ik dat doen?
+Omdat je straks ook nog het RunScript node wil koppelen aan de LoadScript nodes, kan ik je adviseren om de validatiestatus (present) mee te nemen in je save-API.
+Zo kun je ook server-side controleren of iemand een script probeert te draaien dat niet meer bestaat.
