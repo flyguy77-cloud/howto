@@ -1,0 +1,146 @@
+1. Types definiëren (types/workflow.ts)
+
+export type GitlabFile = {
+  id: string;
+  name: string;
+  path: string;
+};
+
+export type NodeData = {
+  fields: {
+    integration: {
+      gitlab: {
+        file?: GitlabFile & { present?: boolean };
+      };
+    };
+  };
+};
+
+
+⸻
+
+2. Nieuwe hook useValidateGitlabFiles
+
+import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
+import client from "../api/client";
+import { Node } from "@xyflow/react";
+import { GitlabFile, NodeData } from "../types/workflow";
+
+export const useValidateGitlabFiles = (
+  nodes: Node<NodeData>[],
+  setNodes: React.Dispatch<React.SetStateAction<Node<NodeData>[]>>
+) => {
+  // 1. Haal bestanden op uit GitLab
+  const { data: gitlabFiles = [], isLoading } = useQuery<GitlabFile[]>({
+    queryKey: ["gitlab-files"],
+    queryFn: async () => {
+      const res = await client.get<GitlabFile[]>("/api/gitlab/files");
+      return res.data;
+    },
+    staleTime: 60_000,
+  });
+
+  // 2. Valideer automatisch bij nieuwe data
+  useEffect(() => {
+    if (!gitlabFiles.length) return;
+
+    setNodes((prevNodes) =>
+      prevNodes.map((node) => {
+        if (node.type !== "loadscript") return node;
+
+        const file = node.data?.fields?.integration?.gitlab?.file;
+
+        // Als geen file gekozen is → markeer als niet aanwezig
+        if (!file || !file.id) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              fields: {
+                ...node.data.fields,
+                integration: {
+                  ...node.data.fields.integration,
+                  gitlab: {
+                    ...node.data.fields.integration.gitlab,
+                    file: { ...(file || {}), present: false },
+                  },
+                },
+              },
+            },
+          };
+        }
+
+        // Check of file-id voorkomt in GitLab → update "present"
+        const exists = gitlabFiles.some((f) => f.id === file.id);
+
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            fields: {
+              ...node.data.fields,
+              integration: {
+                ...node.data.fields.integration,
+                gitlab: {
+                  ...node.data.fields.integration.gitlab,
+                  file: { ...file, present: exists },
+                },
+              },
+            },
+          },
+        };
+      })
+    );
+  }, [gitlabFiles, setNodes]);
+
+  return { gitlabFiles, isLoading };
+};
+
+
+⸻
+
+3. Gebruik in Editor.tsx
+
+const [nodes, setNodes] = useState<Node<NodeData>[]>([]);
+
+// Haal data op en valideer automatisch
+const { gitlabFiles, isLoading } = useValidateGitlabFiles(nodes, setNodes);
+
+if (isLoading) {
+  return <p>GitLab bestanden worden geladen...</p>;
+}
+
+
+⸻
+
+Hoe de automatische validatie werkt
+	•	Trigger: useQuery haalt gitlabFiles op.
+	•	Effect: Zodra gitlabFiles verandert → useEffect runt automatisch.
+	•	Actie: Elke node met type "loadscript" krijgt zijn file.present-flag geüpdatet.
+	•	Resultaat:
+	•	Geen losse invalidNodes meer nodig.
+	•	Je ziet in de UI direct welke scripts niet meer bestaan.
+
+⸻
+
+Waarom dit beter is dan je oude code
+
+Aspect	Oude hook	Nieuwe hook
+Validatie	Handmatig filteren	Automatisch updaten per node
+Resultaat	Return invalidNodes	Geen losse state, node zelf bevat status
+Typing	Impliciet / any	Volledig getypeerd
+Trigger	Handmatig	Automatisch via useEffect
+
+
+⸻
+
+Volgende stap
+
+We kunnen nu in BaseNode.tsx de present-status visueel tonen.
+Bijvoorbeeld: als present === false, geef je een rode waarschuwing onder de node.
+
+⸻
+
+Wil je dat ik in de BaseNode meteen laat zien hoe je de visuele validatie toevoegt, zodat een loadscript-node rood markeert wanneer het gekozen script niet meer bestaat?
+Dat maakt dit hele flow compleet. Zal ik dat doen?
