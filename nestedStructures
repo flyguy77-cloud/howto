@@ -1,0 +1,191 @@
+import {useCallback, useEffect, useState} from "react";
+import {useQuery} from "@tanstack/react-query";
+import {applyNodeChanges, NodeChange} from "@xyflow/react";
+
+const oldGitLabFile // Very nested
+= ()=> ({
+    ...node,
+    data: {
+        ...node.data,
+        fields: node.data.fields.map((field) => ({
+            ...field,
+            integration: field.integration.map((int) => ({
+                ...int,
+                gitlab: int.gitlab.map((g) => ({
+                    ...g,
+                    file: {
+                        ...g.file,
+                        id: file.id,
+                        name: file.name,
+                        path: file.path,
+                        present: true,
+                    },
+                })),
+            })),
+        })),
+    },
+});
+
+type GitlabFile = {
+    data: {
+        fields: {
+            integrations: {
+                gitlab?: {
+                    files?: {
+                        selected?: {
+                            id: string;
+                            name: string;
+                            path: string;
+                            present: boolean;
+                        };
+                        list?: [];
+                    };
+                    projects?: {
+                        id: string;
+                        name: string;
+                    }[];
+                };
+                s3?: {
+                    bucket?: string;
+                    key?: string;
+                };
+                // Toekomstige integraties → makkelijk bij te voegen
+                // azureDevOps?: {...}
+                // bitbucket?: {...}
+            };
+        };
+    }
+}
+
+const updateGitlabFile = (
+    node: any,
+    file: { id: string; name: string; path: string }
+): Node => ({
+    ...node,
+    data: {
+        ...node.data,
+        fields: {
+            ...node.data.fields,
+            integrations: {
+                ...node.data.fields.integrations,
+                gitlab: {
+                    ...node.data.fields.integrations?.gitlab,
+                    files: {
+                        ...node.data.fields.integrations?.gitlab?.files,
+                        selected: {...file, present: true},
+                    },
+                },
+            },
+        },
+    },
+});
+
+setNodes((prevNodes = []) =>
+    prevNodes.map((node) =>
+        node.id === selectedNodeId ? updateGitlabFile(node, file) : node
+    )
+);
+
+export const useValidateGitlabFiles: GitlabFile = (
+    nodes: Node[],
+    setNodes: React.Dispatch<React.SetStateAction<Node[]>>
+    //  betekent:
+    //     “setNodes is een functie die ofwel direct een nieuwe nodes-array kan krijgen,
+    //     of een callback die de vorige nodes gebruikt.”
+) => {
+    const {data: gitlabFiles = [], isLoading} = useQuery<GitlabFile[]>({
+        queryKey: ["gitlab-files"],
+        queryFn: async () => {
+            const res = await client.get("/api/gitlab/files");
+            return res.data;
+        },
+        staleTime: 60_000,
+    });
+
+    useEffect(() => {
+        if (!nodes?.length) return;
+
+        setNodes((prevNodes) =>
+            prevNodes.map((node) => {
+                if (node.type !== "loadscript") return node;
+
+                const selectedFile =
+                    node.data.fields?.integrations?.gitlab?.files?.selected;
+
+                // Geen file geselecteerd → markeer als ontbrekend
+                if (!selectedFile?.id) {
+                    return updateGitlabFile(node, {...selectedFile, present: false});
+                }
+
+                // Controleer of file nog bestaat in GitLab
+                const exists = gitlabFiles.some((f) => f.id === selectedFile.id);
+
+                return updateGitlabFile(node, {...selectedFile, present: exists});
+            })
+        );
+    }, [gitlabFiles, nodes, setNodes]);
+
+    return {gitlabFiles, isLoading};
+};
+
+
+const NodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const [nodes, setNodes] = useState<Node[]>([]);
+
+    const onNodesChange = useCallback(
+        (changes: NodeChange[]) => {
+            setNodes((prevNodes) => applyNodeChanges(changes, prevNodes));
+        },
+        []
+    )
+
+    useEffect(() => {
+        if (!nodes || nodes.length === 0) return; // voorkomt validatie op leeg canvas
+        if (isLoading) return; // wacht tot gitlabFiles geladen zijn
+        // ...rest van je validatielogica
+    }, [gitlabFiles, nodes]);
+};
+
+const {gitlabFiles, isLoading} = useValidateGitlabFiles(nodes, setNodes);
+
+
+export const useCleanedFlow = (
+    nodes: Node[],
+    edges: Edge[],
+    setNodes: React.Dispatch<React.SetStateAction<Node[]>>,
+    setEdges: React.Dispatch<React.SetStateAction<Edge[]>>
+) => {
+    const onNodesChange = useCallback(
+        (changes: NodeChange[]) => {
+            const updatedNodes = applyNodeChanges(changes, nodes);
+
+            const removedIds = changes
+                .filter((c) => c.type === "remove")
+                .map((c) => c.id);
+
+            const updatedEdges = edges.filter(
+                (edge) => !removedIds.includes(edge.source) && !removedIds.includes(edge.target)
+            );
+
+            setNodes(updatedNodes);
+            setEdges(updatedEdges);
+        },
+        [nodes, edges, setNodes, setEdges] // dependency array
+    );
+
+    return {onNodesChange};
+};
+
+let nodeCounter = parseInt(localStorage.getItem("nodeCounter")); // ← geeft NaN → ++NaN = Infinity
+
+const lastId = nodes[nodes.length - 1]?.id?.split("_")[1];
+let nodeCounter = Number(lastId);
+// En als nodes.length === 0, dan is lastId === undefined, en Number(undefined) === NaN → ++NaN = Infinity.
+
+const nodeIdCounter = useRef(1);
+
+const getNextNodeId = () => {
+    const id = `node_${nodeIdCounter.current}`;
+    nodeIdCounter.current += 1;
+    return id;
+};
