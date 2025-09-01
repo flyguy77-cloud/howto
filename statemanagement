@@ -1,0 +1,167 @@
+Zorg dat je setNodes altijd een array returnt, ook als er niks hoeft te veranderen:
+
+Fout voorbeeld:
+setNodes((prev) => {
+  if (!gitlabFiles.length) return; // Geen return value → undefined
+  return prev.map(...);
+});
+
+Goed voorbeeld:
+setNodes((prev) => {
+  if (!gitlabFiles.length) return prev; // Altijd array teruggeven
+  return prev.map(...);
+});
+
+useEffect(() => {
+  if (!Array.isArray(nodes) || nodes.length === 0) return;
+
+  setNodes((prev) => {
+    if (!Array.isArray(prev)) return [];
+
+    return prev.map((node) => {
+      if (node.type !== "loadscript") return node;
+
+      const fields = node.data?.fields;
+      const integration = fields?.[0]?.integration;
+      const gitlab = integration?.[0]?.gitlab;
+      const file = gitlab?.[0]?.file;
+
+      if (!file?.id) {
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            fields: [
+              {
+                ...fields?.[0],
+                integration: [
+                  {
+                    ...integration?.[0],
+                    gitlab: [
+                      {
+                        ...gitlab?.[0],
+                        file: {
+                          ...(file || {}),
+                          present: false, // geen geldig script geselecteerd
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      }
+
+      // Check of file.id bestaat in GitLab
+      const exists = gitlabFiles.some((f) => f.id === file.id);
+
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          fields: [
+            {
+              ...fields?.[0],
+              integration: [
+                {
+                  ...integration?.[0],
+                  gitlab: [
+                    {
+                      ...gitlab?.[0],
+                      file: {
+                        ...file,
+                        present: exists, // true als file-id in lijst zit
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      };
+    });
+  });
+}, [gitlabFiles, nodes, setNodes]);
+
+=======
+
+Ja, het is prima dat je dit doet:
+
+return (
+  <Flow
+    nodes={nodes}
+    edges={edges}
+    setNodes={setNodes}
+    setEdges={setEdges}
+    onNodesChange={onNodesChange}
+  />
+);
+
+Maar dan moet je onNodesChange wél in Editor.tsx definiëren (zoals je hierboven doet) én met de juiste useCallback. Dus:
+	•	nodes leeft in Editor.tsx
+	•	setNodes leeft in Editor.tsx
+	•	onNodesChange leeft ook in Editor.tsx, want die heeft directe toegang tot setNodes
+	•	Flow is “dumb” en krijgt alles als props
+
+⸻
+
+Waarom dit logisch is
+
+Flow is een puur presentatiecomponent in jouw architectuur. De echte businesslogica (waar de state wordt beheerd, zoals validatie via useValidateGitlabFiles) gebeurt in Editor.tsx. Dat betekent:
+	•	Editor.tsx is de source of truth voor nodes
+	•	setNodes moet dus daar blijven
+	•	Alle handlers die setNodes gebruiken, zoals onNodesChange, moeten ook daar leven
+
+⸻
+
+Wat je moet vermijden
+
+Je wil niet dat Flow.tsx zelf een eigen setNodes() gaat doen, of lokale state heeft zoals:
+
+const [nodes, setNodes] = useState<Node[]>([]);
+
+Want dan zitten je Editor.tsx en Flow.tsx op twee verschillende bronnen van waarheid, en dat breekt je app zéker als je complexe flows (zoals validatie of synchronisatie met de backend) gebruikt.
+
+⸻
+
+Dus de correcte, professionele opzet is:
+
+Editor.tsx:
+
+const [nodes, setNodes] = useState<Node[]>([]);
+const [edges, setEdges] = useState<Edge[]>([]);
+
+const { gitlabFiles, isLoading } = useValidateGitlabFiles(nodes, setNodes);
+
+const onNodesChange = useCallback(
+  (changes: NodeChange[]) => {
+    setNodes((prev) => applyNodeChanges(changes, prev));
+  },
+  []
+);
+
+return (
+  <Flow
+    nodes={nodes}
+    edges={edges}
+    setNodes={setNodes}
+    setEdges={setEdges}
+    onNodesChange={onNodesChange}
+  />
+);
+
+Flow.tsx:
+
+const Flow = ({ nodes, edges, setNodes, setEdges, onNodesChange }) => {
+  return (
+    <ReactFlow
+      nodes={nodes}
+      edges={edges}
+      onNodesChange={onNodesChange}
+      // eventueel onEdgesChange of onConnect
+    />
+  );
+};
