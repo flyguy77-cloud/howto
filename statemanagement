@@ -165,3 +165,131 @@ const Flow = ({ nodes, edges, setNodes, setEdges, onNodesChange }) => {
     />
   );
 };
+
+useEffect(() => {
+  if (!gitlabFiles || gitlabFiles.length === 0) return;
+  if (!nodes || nodes.length === 0) return;
+
+  setNodes((prevNodes) => {
+    let updated = false;
+
+    const validatedNodes = prevNodes.map((node) => {
+      if (node.type !== "loadscript") return node;
+
+      const file = node.data?.fields?.integration?.gitlab?.file;
+      const exists = gitlabFiles.some((f) => f.id === file?.id);
+
+      const present = !!file?.id && exists;
+
+      // Check of er daadwerkelijk iets veranderd is
+      if (file?.present !== present) {
+        updated = true;
+
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            fields: {
+              ...node.data.fields,
+              integration: {
+                ...node.data.fields.integration,
+                gitlab: {
+                  ...node.data.fields.integration.gitlab,
+                  file: {
+                    ...file,
+                    present
+                  }
+                }
+              }
+            }
+          }
+        };
+      }
+
+      return node;
+    });
+
+    return updated ? validatedNodes : prevNodes; // 💥 voorkomt loop
+  });
+}, [gitlabFiles]); // 👈 Alleen afhankelijk van gitlabFiles
+
+export const Flow = ({ nodes, edges, setNodes, setEdges }: FlowProps) => {
+  const onNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      setNodes((prevNodes) => applyNodeChanges(changes, prevNodes));
+    },
+    [setNodes]
+  );
+
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange[]) => {
+      setEdges((prevEdges) => applyEdgeChanges(changes, prevEdges));
+    },
+    [setEdges]
+  );
+
+  return (
+    <ReactFlow
+      nodes={nodes}
+      edges={edges}
+      onNodesChange={onNodesChange}
+      onEdgesChange={onEdgesChange}
+      fitView
+    />
+  );
+};
+
+type FlowProps = {
+  nodes: Node[];
+  setNodes: React.Dispatch<React.SetStateAction<Node[]>>;
+  edges: Edge[];
+  setEdges: React.Dispatch<React.SetStateAction<Edge[]>>;
+};
+
+export const Flow = ({ nodes, setNodes, edges, setEdges }: FlowProps) => {
+  const onNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      setNodes((prevNodes) => applyNodeChanges(changes, prevNodes));
+    },
+    [setNodes]
+  );
+
+  const onDrop = useCallback(
+    (event: React.DragEvent) => {
+      const type = event.dataTransfer.getData("application/reactflow");
+      const position = { x: event.clientX, y: event.clientY };
+      const newId = getNextNodeId(nodes);
+
+      const newNode: Node = {
+        id: newId,
+        type,
+        position,
+        data: {
+          fields: {
+            integration: {
+              gitlab: {
+                file: {},
+              },
+            },
+          },
+        },
+      };
+
+      setNodes((prev) => [...prev, newNode]);
+    },
+    [nodes, setNodes]
+  );
+
+  return (
+    <ReactFlow
+      nodes={nodes}
+      edges={edges}
+      onNodesChange={onNodesChange}
+      onDrop={onDrop}
+      ...
+    />
+  );
+};
+
+
+
