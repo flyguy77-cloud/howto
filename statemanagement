@@ -291,5 +291,121 @@ export const Flow = ({ nodes, setNodes, edges, setEdges }: FlowProps) => {
   );
 };
 
+======
+useEffect(() => {
+  if (!Array.isArray(nodes) || nodes.length === 0) return;
+
+  setNodes((prev) => {
+    if (!Array.isArray(prev)) return [];
+
+    let changed = false;
+
+    const updatedNodes = prev.map((node) => {
+      if (node.type !== "loadscript") return node;
+
+      const fields = node.data?.fields;
+      const integration = fields?.[0]?.integration;
+      const gitlab = integration?.[0]?.gitlab;
+      const file = gitlab?.[0]?.file;
+
+      const currentPresent = file?.present;
+      let newPresent = false;
+
+      if (!file?.id) {
+        newPresent = false;
+      } else {
+        newPresent = gitlabFiles.some((f) => f.id === file.id);
+      }
+
+      if (currentPresent === newPresent) {
+        return node; // niets veranderd
+      }
+
+      changed = true;
+
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          fields: [
+            {
+              ...fields?.[0],
+              integration: [
+                {
+                  ...integration?.[0],
+                  gitlab: [
+                    {
+                      ...gitlab?.[0],
+                      file: {
+                        ...file,
+                        present: newPresent,
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      };
+    });
+
+    return changed ? updatedNodes : prev;
+  });
+}, [gitlabFiles, nodes]); // ✅ nu mag nodes erbij
 
 
+====
+Alternatief: zet een trigger op file selectie zelf
+
+Als je het cleaner wil doen, kun je bij het selecteren van een GitLab-file in de modal een update triggeren via updateField(...) en dan een kleine side-effect hook toevoegen:
+
+// In je modal bij onSelect:
+onSelect = (file) => {
+  updateField("fields[0].integration[0].gitlab[0].file", {
+    ...file,
+    present: null, // laat validatie opnieuw uitvoeren
+  });
+};
+
+En dan in je useValidateGitlabFiles, luister je alleen naar gitlabFiles, en laat je de state zelf bepalen wanneer validatie nodig is:
+useEffect(() => {
+  setNodes((prev) => {
+    return prev.map((node) => {
+      if (node.type !== "loadscript") return node;
+
+      const file = node.data?.fields?.[0]?.integration?.[0]?.gitlab?.[0]?.file;
+
+      if (!file?.id) return node;
+      if (file.present !== null) return node; // al gevalideerd
+
+      const present = gitlabFiles.some((f) => f.id === file.id);
+
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          fields: [
+            {
+              ...node.data.fields?.[0],
+              integration: [
+                {
+                  ...node.data.fields?.[0].integration?.[0],
+                  gitlab: [
+                    {
+                      ...node.data.fields?.[0].integration?.[0].gitlab?.[0],
+                      file: {
+                        ...file,
+                        present,
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      };
+    });
+  });
+}, [gitlabFiles]);
