@@ -409,3 +409,15 @@ useEffect(() => {
     });
   });
 }, [gitlabFiles]);
+
+
+const getNextNodeId = (nodes: Node[]) => {
+  const ids = nodes
+    .map((n) => parseInt(n.id.split("_")[1]))
+    .filter((n) => Number.isFinite(n) && !isNaN(n) && n >= 0);
+
+  const maxId = ids.length > 0 ? Math.max(...ids) : 0;
+  return `node_${maxId + 1}`;
+};
+
+const newNodeId = getNextNodeId(nodes);
