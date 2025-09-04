@@ -1,4 +1,4 @@
-Zorg dat je setNodes altijd een array returnt, ook als er niks hoeft te veranderen:
+nu Zorg dat je setNodes altijd een array returnt, ook als er niks hoeft te veranderen:
 
 Fout voorbeeld:
 setNodes((prev) => {
@@ -421,3 +421,52 @@ const getNextNodeId = (nodes: Node[]) => {
 };
 
 const newNodeId = getNextNodeId(nodes);
+
+const handleDrop = (event: React.DragEvent) => {
+  event.preventDefault();
+  const nodeType = event.dataTransfer.getData("application/reactflow");
+
+  setNodes((prevNodes) => {
+    const newId = getNextNodeId(prevNodes, nodeType); // gebruik de juiste versie van nodes
+
+    const newNode: Node = {
+      id: newId,
+      type: nodeType,
+      position: {/* bepaal dit met XYFlow */},
+      data: { /* je data hier */ }
+    };
+
+    return [...prevNodes, newNode];
+  });
+};
+
+
+
+const getNextNodeId = (nodes: Node[], type: string): string => {
+  const ids = nodes
+    .filter((n) => n.type === type)
+    .map((n) => parseInt(n.id.split("_")[1], 10))
+    .filter(Number.isFinite);
+
+  const max = ids.length > 0 ? Math.max(...ids) : 0;
+  return `${type}_${max + 1}`;
+};
+
+
+
+of,
+const nodeIdCounter = useRef(1);
+
+const getNextNodeId = (type: string) => {
+  const id = `${type}_${nodeIdCounter.current}`;
+  nodeIdCounter.current += 1;
+  return id;
+};
+
+
+
+
+
+
+
+
