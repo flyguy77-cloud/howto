@@ -1,0 +1,110 @@
+
+1: Begrijpen van het huidige datamodel
+	•	Elke node op het canvas is een object van het type Node.
+	•	Edges verbinden nodes met source en target.
+	•	Elke LoadScript-node heeft:
+	•	Een geselecteerd GitLab-script (file: { id, name, path, present }).
+	•	Elke RunScript-node moet:
+	•	Weten welke LoadScripts eraan gekoppeld zijn (via edges).
+	•	Van elke gekoppelde LoadScript het script kunnen ophalen.
+
+
+2: Awareness implementeren in frontend
+
+2.1. Bijhouden van connecties via edges
+
+Maak een hook of helper die de gekoppelde LoadScripts voor een RunScript node ophaalt op basis van edges.
+
+// utils/getConnectedLoadScripts.ts
+import { Edge, Node } from "@xyflow/react";
+
+export const getConnectedLoadScripts = (
+  runscriptNodeId: string,
+  edges: Edge[],
+  nodes: Node[]
+) => {
+  const connectedLoadScriptIds = edges
+    .filter((edge) => edge.target === runscriptNodeId)
+    .map((edge) => edge.source);
+
+  const connectedLoadScriptNodes = nodes.filter(
+    (node) =>
+      connectedLoadScriptIds.includes(node.id) && node.type === "loadscript"
+  );
+
+  return connectedLoadScriptNodes;
+};
+
+
+2.2. In je RunScript component
+
+const connectedLoadScripts = getConnectedLoadScripts(node.id, edges, nodes);
+
+Hiermee weet je als RunScript-node welke LoadScripts eraan gekoppeld zijn.
+
+
+3: Awareness gebruiken voor GitLab-content ophalen
+
+3.1. Script IDs ophalen
+
+const scriptIds = connectedLoadScripts
+  .map((n) => n.data?.fields?.[0]?.integration?.[0]?.gitlab?.[0]?.file?.id)
+  .filter(Boolean);
+
+3.2. API call naar backend om content op te halen
+
+const { data: scripts, isLoading } = useQuery({
+  queryKey: ["scripts", scriptIds],
+  queryFn: async () => {
+    const res = await client.post("/api/gitlab/scripts/content", {
+      scriptIds,
+    });
+    return res.data; // bijv. array van { id, content }
+  },
+  enabled: scriptIds.length > 0,
+});
+
+
+
+4: (Optioneel) RunScript-node preview van wat het gaat uitvoeren
+
+In RunScriptNode.tsx:
+
+{scripts.map(script => (
+  <Box key={script.id}>
+    <Typography>{script.name}</Typography>
+    <CodeBlock code={script.content.slice(0, 100)} />
+  </Box>
+))}
+
+5: Voorbereiding op uitvoering
+
+De RunScript-node moet een payload kunnen samenstellen:
+
+const executionPayload = connectedLoadScripts.map((scriptNode) => ({
+  scriptId: scriptNode.data?.fields?.[0]?.integration?.[0]?.gitlab?.[0]?.file?.id,
+  content: scripts.find((s) => s.id === scriptNode.data?.fields?.[0]?.integration?.[0]?.gitlab?.[0]?.file?.id)?.content,
+  variables: {
+    // ...op basis van gebruikersinput of workflowvariabelen
+  },
+}));
+
+Deze payload kan worden doorgestuurd naar een executor of backend-service zodra je aan de uitvoerfase begint.
+
+
+
+
+Stap	Wat levert het op?
+Awareness (edges)	Welke LoadScripts zijn gekoppeld
+Validatie	Zijn de gekoppelde scripts geldig
+Ophaalbare content	Wat gaat er straks uitgevoerd worden
+Payloadconstructie	Wat wordt er doorgestuurd naar backend
+
+
+Tips en Valkuilen
+	•	Niet direct nodes aanpassen in state zonder check → dit veroorzaakt loops.
+	•	Gebruik useMemo voor performance bij grote canvas-sets.
+	•	Zorg dat scriptIds stabiel blijven met useMemo, anders refetch je continu.
+	•	Gebruik enabled in je useQuery zodat het alleen triggert wanneer data aanwezig is.
+	•	Overweeg centrale ExecutionContext als je verder schaalt → bv. als meerdere RunScripts een execution pipeline aansturen.
+Wil je dat ik dit even opzet als een werkend useConnectedScripts hook of het volledig voorbeeld in je node component uitschrijf?
