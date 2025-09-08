@@ -100,6 +100,32 @@ Validatie	Zijn de gekoppelde scripts geldig
 Ophaalbare content	Wat gaat er straks uitgevoerd worden
 Payloadconstructie	Wat wordt er doorgestuurd naar backend
 
+// utils/getNextNodeId.ts
+import { Node } from "@xyflow/react";
+
+export const getNextNodeId = (nodes: Node[], type: string): string => {
+  const typeNodes = nodes.filter((n) => n.type === type);
+
+  const maxId = typeNodes.reduce((acc, node) => {
+    const parts = node.id.split("_");
+    const suffix = parseInt(parts[1]);
+    return Number.isFinite(suffix) && suffix > acc ? suffix : acc;
+  }, 0);
+
+  return `${type}_${maxId + 1}`;
+};
+
+const handleDrop = () => {
+  const newId = getNextNodeId(currentNodes, "loadscript");
+  const newNode = {
+    id: newId,
+    type: "loadscript",
+    position: { x: 100, y: 200 },
+    data: { ... }
+  };
+
+  setNodes((prev) => [...prev, newNode]);
+};
 
 Tips en Valkuilen
 	•	Niet direct nodes aanpassen in state zonder check → dit veroorzaakt loops.
