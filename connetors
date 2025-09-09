@@ -1,4 +1,59 @@
+import { nanoid } from 'nanoid';
 
+export const getNextNodeId = (type: string) => {
+  return `${type}_${nanoid(6)}`; // Bijvoorbeeld: "loadscript_dE3fR8"
+};
+
+
+const nodeIdCounters = useRef<Map<string, number>>(new Map());
+
+export const getNextNodeId = (type: string): string => {
+  const current = nodeIdCounters.current.get(type) ?? 0;
+  const next = current + 1;
+  nodeIdCounters.current.set(type, next);
+  return `${type}_${next}`;
+};
+
+
+const nodeIdCounters = useRef<Map<string, number>>(new Map());
+
+import { Node } from "@xyflow/react";
+
+export const initNodeCounters = (nodes: Node[]) => {
+  const counters = new Map<string, number>();
+
+  for (const node of nodes) {
+    const [type, rawSuffix] = node.id.split("_");
+    const suffix = parseInt(rawSuffix);
+    if (!Number.isFinite(suffix)) continue;
+
+    const currentMax = counters.get(type) ?? 0;
+    if (suffix > currentMax) {
+      counters.set(type, suffix);
+    }
+  }
+
+  return counters;
+};
+
+
+useEffect(() => {
+  if (fetchedWorkflow?.nodes) {
+    setNodes(fetchedWorkflow.nodes);
+
+    // Init counters op basis van bestaande node IDs
+    nodeIdCounters.current = initNodeCounters(fetchedWorkflow.nodes);
+  }
+}, [fetchedWorkflow]);
+
+
+
+const getNextNodeId = (type: string): string => {
+  const current = nodeIdCounters.current.get(type) ?? 0;
+  const next = current + 1;
+  nodeIdCounters.current.set(type, next);
+  return `${type}_${next}`;
+};
 1: Begrijpen van het huidige datamodel
 	•	Elke node op het canvas is een object van het type Node.
 	•	Edges verbinden nodes met source en target.
