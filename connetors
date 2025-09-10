@@ -82,6 +82,10 @@ export const getConnectedLoadScripts = (
     .filter((edge) => edge.target === runscriptNodeId)
     .map((edge) => edge.source);
 
+if (node.type === "runscript") {
+  const connectedLoadScripts = getConnectedLoadScripts(node.id, edges, nodes);
+  // ... verdere logica
+
   const connectedLoadScriptNodes = nodes.filter(
     (node) =>
       connectedLoadScriptIds.includes(node.id) && node.type === "loadscript"
@@ -89,6 +93,14 @@ export const getConnectedLoadScripts = (
 
   return connectedLoadScriptNodes;
 };
+
+type guard
+const isRunScriptNode = (node: Node): boolean => node.type === "runscript";
+
+// Later in de code:
+if (isRunScriptNode(node)) {
+  const loadScripts = getConnectedLoadScripts(node.id, edges, nodes);
+}
 
 
 2.2. In je RunScript component
