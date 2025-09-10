@@ -37,23 +37,23 @@ export const initNodeCounters = (nodes: Node[]) => {
 };
 
 
-useEffect(() => {
-  if (fetchedWorkflow?.nodes) {
-    setNodes(fetchedWorkflow.nodes);
+preview
+{scripts.map(script => (
+  <Box key={script.id}>
+    <Typography>{script.name}</Typography>
+    <CodeBlock code={script.content.slice(0, 100)} />
+  </Box>
+))}
 
-    // Init counters op basis van bestaande node IDs
-    nodeIdCounters.current = initNodeCounters(fetchedWorkflow.nodes);
-  }
-}, [fetchedWorkflow]);
+executiepayload
+const executionPayload = connectedLoadScripts.map((scriptNode) => ({
+  scriptId: scriptNode.data?.fields?.[0]?.integration?.[0]?.gitlab?.[0]?.file?.id,
+  content: scripts.find((s) => s.id === scriptNode.data?.fields?.[0]?.integration?.[0]?.gitlab?.[0]?.file?.id)?.content,
+  variables: {
+    // ...op basis van gebruikersinput of workflowvariabelen
+  },
+}));
 
-
-
-const getNextNodeId = (type: string): string => {
-  const current = nodeIdCounters.current.get(type) ?? 0;
-  const next = current + 1;
-  nodeIdCounters.current.set(type, next);
-  return `${type}_${next}`;
-};
 1: Begrijpen van het huidige datamodel
 	•	Elke node op het canvas is een object van het type Node.
 	•	Edges verbinden nodes met source en target.
@@ -104,7 +104,7 @@ Hiermee weet je als RunScript-node welke LoadScripts eraan gekoppeld zijn.
 
 const scriptIds = connectedLoadScripts
   .map((n) => n.data?.fields?.[0]?.integration?.[0]?.gitlab?.[0]?.file?.id)
-  .filter(Boolean);
+  .filter(Boolean); // .filter((id) => typeof id === "string" && id.length > 0)
 
 3.2. API call naar backend om content op te halen
 
