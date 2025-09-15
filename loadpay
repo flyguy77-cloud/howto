@@ -1,0 +1,119 @@
+Wat moet er in de payload?
+
+Voor een enkele runscript-node moet de payload bestaan uit:
+
+RunScriptPayload:
+
+type RunScriptPayload = {
+  runscriptId: string;
+  runscriptName: string;
+  triggeredBy: "manual" | "cron"; // of iets anders?
+  timestamp: string;
+  scripts: LoadScriptPayload[];
+};
+
+LoadScriptPayload:
+
+type LoadScriptPayload = {
+  nodeId: string;
+  scriptId: string;
+  scriptName: string;
+  scriptPath: string;
+  variables: Record<string, string>;
+  content: string; // ← via backend opgehaald!
+};
+
+
+Stappenplan voor implementatie
+
+Identificeer de runscript node die uitgevoerd moet worden
+
+Bijvoorbeeld in een functie:
+
+const onExecuteRunScript = async (runscriptNodeId: string) => {
+  ...
+}
+
+
+Zoek de gekoppelde loadscript nodes
+
+Gebruik je bestaande helper:
+const connectedLoadScripts = getConnectedLoadScripts(runscriptNodeId, edges, nodes);
+
+
+Stel de scriptmetadata samen
+
+Dit komt uit de node zelf:
+const metadata = loadscriptNode.data?.fields?.[0]?.integration?.[0]?.gitlab?.[0]?.file;
+
+En de variabelen eventueel uit een apart veld:
+const variables = loadscriptNode.data?.fields?.[0]?.params || {};
+
+
+Haal de scriptcontent op uit de backend
+
+Stel dat je endpoint is:
+GET /api/gitlab/file-content?projectId=X&path=scripts/setup.sh
+
+Dan doe je:
+
+const fetchScriptContent = async (path: string): Promise<string> => {
+  const res = await client.get(`/api/gitlab/file-content`, { params: { path } });
+  return res.data.content;
+};
+
+
+Stel per LoadScript een LoadScriptPayload samen
+
+Bijv:
+
+const loadScriptPayloads: LoadScriptPayload[] = await Promise.all(
+  connectedLoadScripts.map(async (node) => {
+    const file = node.data?.fields?.[0]?.integration?.[0]?.gitlab?.[0]?.file;
+    const variables = node.data?.fields?.[0]?.params || {};
+
+    const content = await fetchScriptContent(file.path); // backend call
+
+    return {
+      nodeId: node.id,
+      scriptId: file.id,
+      scriptName: file.name,
+      scriptPath: file.path,
+      variables,
+      content,
+    };
+  })
+);
+
+
+Maak de complete RunScriptPayload
+
+const runscriptNode = nodes.find(n => n.id === runscriptNodeId);
+
+const runScriptPayload: RunScriptPayload = {
+  runscriptId: runscriptNode.id,
+  runscriptName: runscriptNode.data?.label || "Unnamed RunScript",
+  triggeredBy: "manual",
+  timestamp: new Date().toISOString(),
+  scripts: loadScriptPayloads
+};
+
+
+Verstuur naar backend executor
+await client.post("/api/execute", runScriptPayload);
+
+
+Waar?
+
+Je kunt dit in een hook zetten, bijv. useRunScriptExecutor(runscriptId) of als helperfunctie:
+await executeRunScript(runscriptId, nodes, edges);
+
+
+Samengevat
+	•	Identificeer de runscript
+	•	Zoek gekoppelde loadscripts
+	•	Verzamel scriptmetadata en variabelen
+	•	Haal scriptinhoud op via backend
+	• Bouw een nette payload op
+	•	Verstuur naar backend executor
+Wil je dat ik dit als complete TypeScript utility file voor je uitschrijf (buildRunScriptPayload.ts) met types en comments?
