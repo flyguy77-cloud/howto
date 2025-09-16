@@ -1,0 +1,80 @@
+Gebruik useQuery voor alle scriptinhoud
+1. Verzamel scriptIds van alle gekoppelde loadscript nodes
+
+import { getConnectedLoadScripts } from "../utils/getConnectedLoadScripts";
+
+const connectedLoadScripts = getConnectedLoadScripts(runscriptNodeId, edges, nodes);
+
+const scriptIds = connectedLoadScripts
+  .map((n) => n.data?.fields?.[0]?.integration?.[0]?.gitlab?.[0]?.file?.id)
+  .filter(Boolean);
+
+
+2. Gebruik useQuery om inhoud van alle scripts in één keer op te halen
+
+const { data: scripts = [], isLoading } = useQuery({
+  queryKey: ["scripts", scriptIds],
+  queryFn: async () => {
+    const res = await client.post("/api/gitlab/scripts/content", {
+      scriptIds,
+    });
+    return res.data; // [{ id, content }]
+  },
+  enabled: scriptIds.length > 0,
+});
+
+
+3. Combineer connectedLoadScripts + scripts uit de query in één payload
+
+const loadScriptPayloads = connectedLoadScripts.map((node) => {
+  const file = node.data?.fields?.[0]?.integration?.[0]?.gitlab?.[0]?.file;
+  const variables = node.data?.fields?.[0]?.params || {};
+  const scriptContent = scripts.find((s) => s.id === file.id)?.content || "";
+
+  return {
+    nodeId: node.id,
+    scriptId: file.id,
+    scriptName: file.name,
+    scriptPath: file.path,
+    variables,
+    content: scriptContent,
+  };
+});
+
+
+4. Bouw en verstuur het RunScriptPayload
+
+const runScriptPayload = {
+  runscriptId: runscriptNodeId,
+  runscriptName: "RunScript Execution",
+  triggeredBy: "manual",
+  timestamp: new Date().toISOString(),
+  scripts: loadScriptPayloads,
+};
+
+await client.post("/api/execute", runScriptPayload);
+
+
+Live flow
+Wil je dit dynamisch uitvoeren zodra er op een “Start” knop wordt geklikt? Zet het dan in een aparte hook:
+
+const { triggerExecution } = useRunScriptExecutor(runscriptNodeId, nodes, edges);
+
+
+Voordelen van deze aanpak:
+
+Voordeel	Waarom
+Batch ophalen	Eén API call → minder latency
+Gebruik van caching (query)	useQuery onthoudt resultaten
+React lifecycle-proof	Geen race conditions of leaks
+Herbruikbaar	Scheid data-fetching van payload-building
+Betere UX	isLoading kun je gebruiken voor spinner etc.
+
+
+Bonus: Backend-optimalisatie
+Je backend /scripts/content kan deze scriptIds vertalen naar paths en contents, of direct op ID query’en in GitLab API. Zorg daar dat je het responseformaat aanhoudt zoals:
+
+[
+  { "id": "123", "content": "echo 'script1'" },
+  { "id": "456", "content": "echo 'script2'" }
+]
