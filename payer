@@ -1,0 +1,143 @@
+Dat is een superlogische keuze — en eerlijk? Ook een stuk schoner in de architectuur. Door een array van runscript objecten op te bouwen, waarbij elk object zijn eigen gekoppelde loadscript-payloads bevat, houd je:
+	•	het overzicht beter in de frontend,
+	•	je backend cleaner als je één runscriptPayload tegelijk verstuurt,
+	•	én heb je flexibiliteit voor batch execution, logging of parallelle processen.
+
+⸻
+
+✅ Stap-voor-stap: Bouw een array van RunScriptPayloads
+
+We gaan een functie maken:
+
+type RunScriptPayload = {
+  runscriptId: string;
+  runscriptName: string;
+  triggeredBy: "manual" | "cron" | string;
+  timestamp: string;
+  scripts: {
+    nodeId: string;
+    scriptId: string;
+    scriptName: string;
+    scriptPath: string;
+    variables: Record<string, any>;
+    content: string;
+  }[];
+};
+
+
+⸻
+
+🔧 1. Groepeer alle runscripts op het canvas
+
+const runscriptNodes = nodes.filter((n) => n.type === "runscript");
+
+
+⸻
+
+🧠 2. Genereer payload per runscript
+
+Bij elke runscript:
+	•	zoek gekoppelde loadscripts (edges)
+	•	pak hun scriptIds
+	•	haal de content uit scripts (die je eerder via useQuery ophaalde)
+
+⸻
+
+✨ 3. Volledige implementatie
+
+import { Edge, Node } from "@xyflow/react";
+
+type GitlabScript = {
+  id: string;
+  content: string;
+};
+
+export const buildRunScriptPayloads = (
+  nodes: Node[],
+  edges: Edge[],
+  scripts: GitlabScript[]
+): RunScriptPayload[] => {
+  const runscriptNodes = nodes.filter((n) => n.type === "runscript");
+
+  return runscriptNodes.map((runscriptNode) => {
+    const runscriptId = runscriptNode.id;
+
+    // Zoek gekoppelde LoadScripts
+    const connectedLoadScripts = edges
+      .filter((edge) => edge.target === runscriptId)
+      .map((edge) => nodes.find((n) => n.id === edge.source))
+      .filter((n): n is Node => !!n && n.type === "loadscript");
+
+    // Bouw script payloads
+    const scriptPayloads = connectedLoadScripts.map((node) => {
+      const file = node.data?.fields?.[0]?.integration?.[0]?.gitlab?.[0]?.file;
+      const variables = node.data?.fields?.[0]?.params || {};
+      const content = scripts.find((s) => s.id === file?.id)?.content || "";
+
+      return {
+        nodeId: node.id,
+        scriptId: file?.id || "",
+        scriptName: file?.name || "",
+        scriptPath: file?.path || "",
+        variables,
+        content,
+      };
+    });
+
+    return {
+      runscriptId,
+      runscriptName: runscriptNode.data?.label || "Unnamed RunScript",
+      triggeredBy: "manual",
+      timestamp: new Date().toISOString(),
+      scripts: scriptPayloads,
+    };
+  });
+};
+
+
+⸻
+
+💡 Resultaat
+
+Je krijgt dan iets als:
+
+[
+  {
+    runscriptId: "runscript_1",
+    runscriptName: "Run Report A",
+    triggeredBy: "manual",
+    timestamp: "2025-09-17T12:00:00Z",
+    scripts: [
+      {
+        nodeId: "loadscript_1",
+        scriptId: "abc123",
+        scriptName: "setup.sh",
+        scriptPath: "scripts/setup.sh",
+        variables: { region: "NL" },
+        content: "echo setup"
+      },
+      ...
+    ]
+  },
+  {
+    runscriptId: "runscript_2",
+    ...
+  }
+]
+
+
+⸻
+
+🔁 Bonus: Per payload verzenden naar backend
+
+const payloads = buildRunScriptPayloads(nodes, edges, scripts);
+
+for (const payload of payloads) {
+  await client.post("/api/execute", payload);
+}
+
+Of: geef de gebruiker de optie om één specifieke runscript te draaien door het juiste payload object eruit te filteren.
+
+⸻
+
+Wil je dat ik dit ook als hook (useRunScriptPayloads) of utils module voor je uitschrijf met TypeScript types?
