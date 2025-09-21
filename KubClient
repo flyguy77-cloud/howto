@@ -1,0 +1,165 @@
+Structuur
+
+Controller (ontvangt payload van frontend)
+→ Service (verwerkt payload, valideert, bouwt job)
+→ Fabric8 K8s client (maakt job aan in namespace)
+
+Endpoint voor script executie
+Logging teruggeven van job status; running, stopped, failed
+PVC aanmaken en mounten in jobs (mulit job mounting)
+Jobs runnen scripts dat op hun beurt weer endpoints in het netwerk bevragen
+Service account die jobs mag aanmaken, monitoren en deleten
+Jobs /pods moeten python versies en packages kunnen installeren? Of een dedicated job met altijd dezelfde python versie en packages
+
+
+⸻
+
+1. DTO’s
+
+// RunScriptRequestDto.java
+public class RunScriptRequestDto {
+    private String runscriptId;
+    private List<ScriptDto> scripts;
+    private Map<String, String> variables; // optioneel, als je env vars wilt injecteren
+}
+
+// ScriptDto.java
+public class ScriptDto {
+    private String id;
+    private String name;
+    private String content; // voor nu inline als string
+}
+
+
+⸻
+
+2. Controller
+
+@RestController
+@RequestMapping("/api/run")
+public class RunScriptController {
+
+    private final RunScriptService runScriptService;
+
+    public RunScriptController(RunScriptService runScriptService) {
+        this.runScriptService = runScriptService;
+    }
+
+    @PostMapping("/execute")
+    public ResponseEntity<String> runScript(@RequestBody RunScriptRequestDto dto) {
+        runScriptService.executeRunScript(dto);
+        return ResponseEntity.ok("Job gestart.");
+    }
+}
+
+
+⸻
+
+3. Service & Implementatie
+
+Interface
+
+public interface RunScriptService {
+    void executeRunScript(RunScriptRequestDto dto);
+}
+
+Implementatie
+
+@Service
+public class RunScriptServiceImpl implements RunScriptService {
+
+    private final KubernetesClient client;
+
+    public RunScriptServiceImpl(KubernetesClient client) {
+        this.client = client;
+    }
+
+    @Override
+    public void executeRunScript(RunScriptRequestDto dto) {
+        String jobName = "job-" + dto.getRunscriptId().toLowerCase();
+
+        // Job opbouwen
+        Job job = new JobBuilder()
+            .withNewMetadata()
+                .withName(jobName)
+                .withNamespace("your-namespace") // vervang met juiste namespace
+            .endMetadata()
+            .withNewSpec()
+                .withTtlSecondsAfterFinished(300)
+                .withNewTemplate()
+                    .withNewMetadata()
+                        .addToLabels("app", "runner")
+                    .endMetadata()
+                    .withNewSpec()
+                        .addNewContainer()
+                            .withName("runner")
+                            .withImage("python:3.11")
+                            .withCommand("sh", "-c", generateScriptCommand(dto))
+                            .addNewVolumeMount()
+                                .withMountPath("/output")
+                                .withName("output-volume")
+                            .endVolumeMount()
+                            .withEnv(dto.getVariables().entrySet().stream()
+                                .map(e -> new EnvVar(e.getKey(), e.getValue(), null))
+                                .collect(Collectors.toList()))
+                        .endContainer()
+                        .withRestartPolicy("Never")
+                        .addNewVolume()
+                            .withName("output-volume")
+                            .withNewEmptyDir() // of gebruik persistentVolumeClaim
+                            .endEmptyDir()
+                        .endVolume()
+                    .endSpec()
+                .endTemplate()
+            .endSpec()
+            .build();
+
+        // Deploy job
+        client.batch().v1().jobs().inNamespace("your-namespace").resource(job).create();
+    }
+
+    private String generateScriptCommand(RunScriptRequestDto dto) {
+        return dto.getScripts().stream()
+                .map(ScriptDto::getContent)
+                .collect(Collectors.joining(" && ")); // combineer scripts in 1 shell-exec
+    }
+}
+
+
+⸻
+
+Overwegingen
+	1.	Volume opslaan naar PVC:
+	•	Vervang .withNewEmptyDir() met .withNewPersistentVolumeClaim().withClaimName("...")
+	2.	Output ophalen:
+	•	Je kunt later de Job status opvragen met:
+
+client.batch().v1().jobs().inNamespace("...").withName("job-123").get();
+
+
+	3.	Security:
+	•	Zorg dat de gebruikte ServiceAccount in K8s voldoende rechten heeft (RBAC + pod exec).
+	4.	Job monitoring / logging:
+	•	Overweeg log collecties via PodLogs:
+
+Pod pod = client.pods().withName(podName).get();
+String logs = client.pods().inNamespace("...").withName(podName).getLog();
+
+
+	5.	Async / Response status:
+	•	Je zou Job status terug kunnen geven via polling endpoint.
+
+⸻
+
+📁 Projectopbouw Suggestie
+
+├── controller/
+│   └── RunScriptController.java
+├── service/
+│   ├── RunScriptService.java
+│   └── RunScriptServiceImpl.java
+├── dto/
+│   ├── RunScriptRequestDto.java
+│   └── ScriptDto.java
+└── config/
+    └── KubernetesClientConfig.java (optioneel)
