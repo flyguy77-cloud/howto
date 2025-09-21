@@ -1,0 +1,199 @@
+Gebruik dedicated Docker-images per use-case of een base image met packages vooraf.
+Laat je Job draaien met een eigen ServiceAccount met beperkte maar toereikende RBAC.
+Gebruik een gedeelde PVC die gelijktijdige toegang ondersteunt, zoals ReadWriteMany (bijv. NFS).
+Sta egress toe naar externe databronnen via netwerk policies of NAT.
+Maak gebruik van initContainers voor pre-tasks (zoals pip install) als dat echt dynamisch moet.
+
+⸻
+1. ServiceAccount & RBAC
+
+Zorg dat er een ServiceAccount bestaat die:
+	•	Jobs/pods mag aanmaken in een specifieke namespace
+	•	PVC’s mag mounten
+	•	Eventueel logs mag ophalen
+
+YAML: runner-service-account.yaml
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: script-runner
+  namespace: your-namespace
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: script-runner-role
+  namespace: your-namespace
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "persistentvolumeclaims"]
+    verbs: ["get", "list", "create", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: script-runner-binding
+  namespace: your-namespace
+subjects:
+  - kind: ServiceAccount
+    name: script-runner
+    namespace: your-namespace
+roleRef:
+  kind: Role
+  name: script-runner-role
+  apiGroup: rbac.authorization.k8s.io
+
+
+⸻
+
+2. Externe toegang (egress)
+
+Standaard staat Kubernetes egress vaak toe, tenzij je werkt met netwerk policies. Indien wél policies actief zijn:
+	•	Zorg dat je runner pods in een NetworkPolicy-toegestane groep zitten.
+	•	Zorg dat de runner via een NAT Gateway of Proxy naar buiten mag.
+
+Voorbeeld NetworkPolicy (optioneel):
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-internet
+  namespace: your-namespace
+spec:
+  podSelector:
+    matchLabels:
+      app: runner
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+
+
+⸻
+
+3. PVC met gelijktijdige toegang
+
+Gebruik een ReadWriteMany volume. Dit kan bijv. een:
+	•	NFS mount (veel gebruikt)
+	•	Longhorn volume met RWX
+	•	Azure Files / EFS (AWS) met RWX
+
+Voorbeeld PVC
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-script-output
+  namespace: your-namespace
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: nfs-client
+
+
+⸻
+
+4. Python versie + packages
+
+Optie 1: Gebruik een custom Docker-image per behoefte
+
+Bijvoorbeeld:
+
+FROM python:3.11-slim
+
+RUN pip install pandas requests matplotlib scikit-learn seaborn
+
+CMD ["sh", "-c", "echo 'script runner image ready'"]
+
+Deze push je naar je container registry:
+
+ghcr.io/your-org/python-runner:3.11-full
+
+Voordeel:
+	•	Snel opstarten
+	•	Geen install-wait-time
+	•	Herbruikbaar
+
+⸻
+
+Minder ideaal: packages dynamisch installeren in de Job
+
+Dat kan zo:
+
+.withCommand("sh", "-c", "pip install -r requirements.txt && python /scripts/script.py")
+
+Maar:
+	•	Trager
+	•	Niet cached
+	•	Netwerk failures breken de Job
+	•	Vereist pip + toegang tot PyPI
+
+Gebruik dit alleen als je dynamisch echt custom scripts wil injecteren.
+
+⸻
+
+5. InitContainer als pre-installer (optioneel)
+
+initContainers:
+- name: install-deps
+  image: python:3.11
+  command: ["sh", "-c", "pip install -r /input/requirements.txt -t /deps"]
+  volumeMounts:
+    - mountPath: /input
+      name: input-volume
+    - mountPath: /deps
+      name: deps-volume
+
+Hoofdcontainer:
+
+command: ["python3", "-m", "script"]
+env:
+  - name: PYTHONPATH
+    value: "/deps"
+
+Maar again: dit is traag, foutgevoelig, niet ideaal.
+
+⸻
+
+6. Code Suggestie (Spring Boot + Fabric8)
+
+In je RunScriptServiceImpl.java:
+
+.withServiceAccount("script-runner")
+.withImage("ghcr.io/your-org/python-runner:3.11-full")
+
+Mount je PVC:
+
+.addNewVolume()
+  .withName("shared-volume")
+  .withNewPersistentVolumeClaim()
+    .withClaimName("shared-script-output")
+  .endPersistentVolumeClaim()
+.endVolume()
+.addNewVolumeMount()
+  .withMountPath("/output")
+  .withName("shared-volume")
+.endVolumeMount()
+
+
+⸻
+
+Samengevat
+
+Aspect	Aanbevolen aanpak
+Python runtime	Custom Docker images per versie/set
+Packages	Pre-installed in image
+Output delen	Gedeelde PVC met RWX (NFS / Longhorn)
+Egress toegang	NetPol config of NAT / proxy
+Beveiliging	Dedicated ServiceAccount + RBAC
+Concurrentie	Jobs parallel toegestaan, elk met eigen pod
+Validatie/status	Poll job status via client.jobs()
