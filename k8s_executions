@@ -3,14 +3,29 @@ Laat de job zélf het GitLab-project clonen, i.p.v. base64 content injecteren of
 Vergelijking: Base64 content vs Git clone in job
 
 Kenmerk	Base64 via frontend/backend	Git clone in pod (aanbevolen)
-Afhankelijkheden	Alleen dat ene bestand, maar geen context (imports, __init__.py, helper scripts)	Volledige projectstructuur: alles werkt zoals de dev het bedoelde
-Versiebeheer	Jij stuurt expliciet wat er in moet	Altijd meest recente commit / branch (of een specifieke ref)
-Simpliciteit backend	Je moet scripts ophalen, decoden, mounten, command stringen bouwen	Eén git clone && python script.py regel in de pod
-Validatie	Jij bent verantwoordelijk voor of het script überhaupt werkt	De omgeving werkt zoals bij de originele dev
-Koppelingen/imports	Geen relatieve imports mogelijk tenzij je alles zelf reconstrueert	from utils.helpers import foo werkt gewoon
-Schaling / onderhoud	Elk script als bestand injecteren, foutgevoelig	Eén algemene container, met repo-clone logic
-Security (optioneel)	Je kunt scripts inspecteren voor uitvoering	Je vertrouwt wat in de repo staat (je zou alsnog sandboxing kunnen toepassen)
 
+Afhankelijkheden	
+Alleen dat ene bestand, maar geen context (imports, __init__.py, helper scripts)	
+
+Volledige projectstructuur: alles werkt zoals de dev het bedoelde
+
+Versiebeheer	
+Jij stuurt expliciet wat er in moet	Altijd meest recente commit / branch (of een specifieke ref)
+
+Simpliciteit backend	
+Je moet scripts ophalen, decoden, mounten, command stringen bouwen	Eén git clone && python script.py regel in de pod
+
+Validatie	
+Jij bent verantwoordelijk voor of het script überhaupt werkt	De omgeving werkt zoals bij de originele dev
+
+Koppelingen/imports	
+Geen relatieve imports mogelijk tenzij je alles zelf reconstrueert	from utils.helpers import foo werkt gewoon
+
+Schaling / onderhoud	
+Elk script als bestand injecteren, foutgevoelig	Eén algemene container, met repo-clone logic
+
+Security (optioneel)	
+Je kunt scripts inspecteren voor uitvoering	Je vertrouwt wat in de repo staat (je zou alsnog sandboxing kunnen toepassen)
 
 Wat moet je dan doen?
 
@@ -74,6 +89,7 @@ Waarom dit future-proof is
 	•	Het laat iedere job zelfstandig functioneren, los van frontend/backend logica.
 	•	Je kunt zelfs andere versies uitvoeren (tags/branches).
 	•	Als het project uitbreidt met meer scripts, configbestanden of requirements: geen aanpassing aan backend nodig.
+
 
 ----
 Hoe combineer je “inline code” met “scripts uit GitLab” in één consistente backend-strategie voor Kubernetes Jobs?
