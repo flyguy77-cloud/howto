@@ -1,0 +1,185 @@
+Laat de job zélf het GitLab-project clonen, i.p.v. base64 content injecteren of los bestand pushen.
+
+Vergelijking: Base64 content vs Git clone in job
+
+Kenmerk	Base64 via frontend/backend	Git clone in pod (aanbevolen)
+Afhankelijkheden	Alleen dat ene bestand, maar geen context (imports, __init__.py, helper scripts)	Volledige projectstructuur: alles werkt zoals de dev het bedoelde
+Versiebeheer	Jij stuurt expliciet wat er in moet	Altijd meest recente commit / branch (of een specifieke ref)
+Simpliciteit backend	Je moet scripts ophalen, decoden, mounten, command stringen bouwen	Eén git clone && python script.py regel in de pod
+Validatie	Jij bent verantwoordelijk voor of het script überhaupt werkt	De omgeving werkt zoals bij de originele dev
+Koppelingen/imports	Geen relatieve imports mogelijk tenzij je alles zelf reconstrueert	from utils.helpers import foo werkt gewoon
+Schaling / onderhoud	Elk script als bestand injecteren, foutgevoelig	Eén algemene container, met repo-clone logic
+Security (optioneel)	Je kunt scripts inspecteren voor uitvoering	Je vertrouwt wat in de repo staat (je zou alsnog sandboxing kunnen toepassen)
+
+
+Wat moet je dan doen?
+
+Je job hoeft alleen nog maar:
+	•	De juiste image te draaien (bijv. python:3.11)
+	•	Een container command te hebben als:
+
+git clone https://gitlab.example.com/group/project.git &&
+cd project &&
+pip install -r requirements.txt &&
+python scripts/my_script.py
+
+
+Je hoeft dan ook niet meer in je Java backend:
+	•	Scriptcontent ophalen en decoden
+	•	Volumes aan te maken om tijdelijk script te injecteren
+	•	script.py in /mnt/scripts te schrijven en mounten
+
+
+Wat heb je dan nodig?
+
+1. Een GitLab token (read-only)
+
+Zorg dat je een K8s Secret maakt in je namespace:
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitlab-credentials
+type: Opaque
+stringData:
+  GITLAB_TOKEN: <je-token>
+
+2. In je job:
+
+Voeg een env-variable toe aan de container:
+
+.withEnv(new EnvVarBuilder()
+  .withName("GITLAB_TOKEN")
+  .withValueFrom(new EnvVarSourceBuilder()
+      .withSecretKeyRef(new SecretKeySelector("GITLAB_TOKEN", "gitlab-credentials", false))
+      .build())
+  .build())
+
+En dan in je container command:
+
+git clone https://oauth2:$GITLAB_TOKEN@gitlab.example.com/group/project.git
+
+Voorbeeld container command in Fabric8 Java
+
+.withCommand("/bin/sh", "-c")
+.withArgs(String.join(" && ", List.of(
+  "git clone https://oauth2:$GITLAB_TOKEN@gitlab.example.com/group/project.git",
+  "cd project",
+  "pip install -r requirements.txt",
+  "python scripts/my_script.py"
+)))
+
+
+Waarom dit future-proof is
+	•	Het laat iedere job zelfstandig functioneren, los van frontend/backend logica.
+	•	Je kunt zelfs andere versies uitvoeren (tags/branches).
+	•	Als het project uitbreidt met meer scripts, configbestanden of requirements: geen aanpassing aan backend nodig.
+
+----
+Hoe combineer je “inline code” met “scripts uit GitLab” in één consistente backend-strategie voor Kubernetes Jobs?
+
+Ja, het Git-clone model werkt perfect voor GitLab-scripts,
+maar voor inline code heb je iets anders nodig:
+Dynamisch genereren van scriptbestanden in de pod op basis van meegeleverde code.
+
+
+Doel: Eén architectuur, twee soorten nodes
+
+Node type	Bron van script	Uitvoering via K8s job
+LoadScript	Bestands-id uit GitLab	Repo wordt in de pod gecloned, script wordt uitgevoerd
+
+InlineScript
+Code direct via frontend ingevoerd	Script wordt in de pod als tijdelijk bestand geschreven en uitgevoerd
+
+
+
+Oplossing voor InlineScript nodes
+
+Voor inline scripts wil je dit:
+	1.	Frontend stuurt payload met inline code:
+
+{
+  "type": "inline",
+  "filename": "inline_script_123.py",
+  "content": "print('Hello from inline!')"
+}
+
+
+	2.	De backend (Java Spring) verwerkt dit:
+	•	Mount een PVC voor scriptopslag
+	•	Schrijft dit scriptbestand naar de PVC in een initContainer of direct in de Job
+	•	Job runt: python /scripts/inline_script_123.py
+
+
+Varianten voor implementatie
+
+1. Frontend stuurt code → backend schrijft naar volume (PVC)
+
+Intuïtief, controle in backend
+Wel wat complexer om filesystemrechten te regelen
+
+2. Backend stopt code als inline command in de job zelf:
+
+.withCommand("/bin/sh", "-c")
+.withArgs("echo '<inline code>' > script.py && python script.py")
+
+Af te raden bij multiline scripts of grote payloads
+Wel oké voor héle kleine snippers
+
+
+Aanbevolen hybride setup (future-proof en veilig)
+
+Backend beslist:
+	•	Als type == "inline" → code schrijven naar PVC
+	•	Als type == "gitlab" → repo clonen in job
+
+Structuur van backend payload (flexibel):
+
+{
+  "jobs": [
+    {
+      "type": "gitlab",
+      "scriptPath": "scripts/data_cleaner.py",
+      "repoUrl": "https://gitlab.example.com/group/project.git",
+      "branch": "main"
+    },
+    {
+      "type": "inline",
+      "filename": "temp_script_456.py",
+      "content": "import json\nprint(json.dumps({'ok': True}))"
+    }
+  ]
+}
+
+
+Wat heb je nodig in backend:
+
+1. Kubernetes Job spec per node-type
+
+switch (jobType) {
+  case "gitlab" -> createGitlabJob(...);
+  case "inline" -> createInlineJob(...);
+}
+
+2. createInlineJob(...):
+	•	PVC mounten
+	•	InitContainer die code schrijft:
+
+echo "$SCRIPT_CONTENT" > /mnt/scripts/inline_script_123.py
+
+Of:
+	•	VolumeMount in main container + script als ConfigMap of emptyDir
+
+
+Denk ook aan:
+	•	Encoding: stuur inline scripts als plain UTF-8, niet als base64
+	•	Validatie: backend checkt op gevaarlijke Python constructies (optioneel)
+	•	Job logica: je kunt type zelfs injecteren in de job env voor logging/debugging
+
+
+Samenvatting
+
+Nodetype	Aanpak
+LoadScript	Repo clone, script uitvoeren
+Inline	Script schrijven op volume → uitvoeren met Python
+Unified	Backend maakt onderscheid, frontend stuurt duidelijk type
