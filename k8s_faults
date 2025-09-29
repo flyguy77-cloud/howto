@@ -1,0 +1,141 @@
+Stappenplan om Forbidden op batch/jobs op te lossen in je CI/CD omgeving
+
+1. Pas je Java backend code aan
+
+Als je dit nog hebt:
+
+Config config = Config.autoConfigure(null); // lokaal oké, in-cluster fout
+
+Vervang het door:
+
+KubernetesClient client = new DefaultKubernetesClient(); // automatisch in-cluster config
+
+Dit zorgt ervoor dat de Fabric8 client gebruikmaakt van de in-cluster service account (/var/run/secrets/kubernetes.io/serviceaccount/token) en niet van .kube/config.
+
+2. Gebruik expliciete serviceAccountName in je Job
+
+Wanneer je de Kubernetes Job maakt in Java, voeg dit toe aan de JobSpec:
+
+new JobBuilder()
+  .withNewMetadata()
+    .withName("runscript-job")
+  .endMetadata()
+  .withNewSpec()
+    .withServiceAccount("runner-serviceaccount") // jouw bestaande SA
+    ...
+
+Gebruik dus de naam van de serviceaccount die wél de juiste permissies heeft om jobs te starten en PVC’s te mounten. Niet "default"!
+
+3. Laat je clusterbeheerder een RoleBinding maken
+
+Omdat jij geen RBAC-machtigingen mag aanpassen, moet jouw clusteradmin dit aanmaken:
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: job-runner
+  namespace: jouw-namespace
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: job-runner-binding
+  namespace: jouw-namespace
+subjects:
+  - kind: ServiceAccount
+    name: runner-serviceaccount  # <- exact match met je Job .spec.serviceAccount
+    namespace: jouw-namespace
+roleRef:
+  kind: Role
+  name: job-runner
+  apiGroup: rbac.authorization.k8s.io
+
+Let op: de namespace moet exact overeenkomen met de namespace waarin je applicatie draait én waar je jobs worden gestart.
+
+
+4. CI/CD: niets speciaals nodig in .gitlab-ci.yml
+
+Zolang jouw Pod (waarin de Java backend draait) gewoon gedeployed wordt met de juiste serviceAccountName in je Deployment manifest, hoeft je .gitlab-ci.yml hier geen variabelen voor te bevatten.
+
+Controleer dit in je Helm chart / K8s manifest:
+
+apiVersion: apps/v1
+kind: Deployment
+...
+spec:
+  template:
+    spec:
+      serviceAccountName: runner-serviceaccount
+
+Zonder deze regel wordt "default" gebruikt → en dat is precies de oorzaak van jouw error.
+
+Samenvatting: 3 dingen om nu te fixen
+
+Fabric8 client goed initialiseren	new DefaultKubernetesClient() gebruiken
+De juiste serviceaccount gebruiken in je Job én Deployment	serviceAccountName: runner-serviceaccount
+Zorg dat die serviceaccount RBAC rechten heeft	Laat clusteradmin RoleBinding aanmaken voor jobs
+
+
+
+==========
+
+Wat is hier dan wel aan de hand?
+
+Als het lokaal werkt met je .kube/config, maar faalt bij deployment in CI/CD met deze foutmelding:
+
+Forbidden: system:serviceaccount:<namespace>:default cannot create resource " " in API group "batch"
+
+…dan zijn er twee serieuze kandidaten voor de oorzaak:
+
+⸻
+
+1. Kubernetes authenticatie = incorrect
+
+Je CI/CD omgeving draait je backend in een Pod, en die gebruikt de default service account van de namespace, tenzij anders geconfigureerd.
+
+Die default serviceaccount heeft géén permissies om Jobs aan te maken — ongeacht of je Job object wél klopt.
+
+Dus: zelfs als je Job goed is, krijg je een “forbidden”.
+
+De lege "resource" string ontstaat dan als bijeffect van hoe Fabric8 (of je API call) omgaat met de API request wanneer authenticatie faalt.
+
+⸻
+
+2. API client is niet goed geïnitialiseerd in cluster
+
+Lokaal heb je:
+
+Config config = Config.autoConfigure(null); // gebruikt ~/.kube/config
+
+Maar in-cluster moet je dit gebruiken:
+
+Config config = new ConfigBuilder().build();
+KubernetesClient client = new DefaultKubernetesClient(config);
+
+Of gewoon:
+
+KubernetesClient client = new DefaultKubernetesClient(); // gebruikt automatisch in-cluster config
+
+Als Config.autoConfigure(null) in CI/CD wordt gebruikt, vindt hij geen ~/.kube/config → gebruikt null → resulteert in ongeldige requests → foutmelding met "resource" = " ".
+
+⸻
+
+Oplossing: 3 cruciale aanpassingen
+
+Stap	Uitleg
+Gebruik DefaultKubernetesClient() zonder Config.autoConfigure()	Dan pakt hij de in-cluster serviceaccount config correct op
+Gebruik een expliciete serviceAccountName in je Job YAML	En zorg dat die serviceaccount RBAC-toegang heeft tot jobs
+Laat je clusteradmin een RoleBinding maken voor jouw serviceaccount	Zodat die create mag uitvoeren op batch/jobs in de juiste namespace
+
+Bonus: Check je Job object lokaal
+
+Als je 100% zeker wil zijn dat het object juist is, kun je het lokaal dumpen als YAML vóór de aanroep:
+
+ObjectMapper mapper = new ObjectMapper(new YAMLFactory());
+System.out.println(mapper.writeValueAsString(job));
+
+Dat helpt debugging enorm.
