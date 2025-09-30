@@ -1,0 +1,148 @@
+Testdoelen voor executeRunScript(RequestDto dto)
+
+Je wilt het volgende testen:
+	1.	Correcte aanroep van client.batch().v1().jobs().inNamespace(...).create(...).
+	2.	Correcte Job opgebouwd (metadata, containers, volumeMounts, etc).
+	3.	Foutafhandeling, bijv. als create(...) een exception gooit.
+	4.	Eventueel: validatie van bepaalde logica in de JobSpec op basis van input.
+
+Benodigdheden: setup met Mockito
+
+Je mockt de KubernetesClient en alle subcomponenten van de .batch().v1().jobs()... keten.
+
+
+Stel: je service ziet er ongeveer zo uit
+
+@RequiredArgsConstructor
+@Service
+public class KubernetesJobServiceImpl implements KubernetesJobService {
+
+    private final KubernetesClient client;
+
+    @Override
+    public void executeRunScript(RunScriptRequestDto dto) {
+        Job job = new JobBuilder()
+                .withNewMetadata()
+                    .withName("runscript-job-" + dto.getId())
+                .endMetadata()
+                .withNewSpec()
+                    .withNewTemplate()
+                        .withNewSpec()
+                            .addNewContainer()
+                                .withName("python")
+                                .withImage("python:3.11")
+                                .withCommand("python", "-c", dto.getScriptContent())
+                            .endContainer()
+                            .withRestartPolicy("Never")
+                        .endSpec()
+                    .endTemplate()
+                .endSpec()
+                .build();
+
+        client.batch()
+              .v1()
+              .jobs()
+              .inNamespace("my-namespace")
+              .create(job);
+    }
+}
+
+
+Voorbeeld: Unit Test met Mockito
+
+@ExtendWith(MockitoExtension.class)
+class KubernetesJobServiceImplTest {
+
+    @Mock
+    KubernetesClient client;
+
+    @Mock
+    MixedOperation<Job, JobList, Resource<Job>> jobOperation;
+
+    @Mock
+    BatchAPIGroupDSL batch;
+
+    @Mock
+    V1BatchAPIGroupDSL v1;
+
+    @Mock
+    NonNamespaceOperation<Job, JobList, Resource<Job>> namespacedJobs;
+
+    @InjectMocks
+    KubernetesJobServiceImpl service;
+
+    @Test
+    void testExecuteRunScript_createsJobCorrectly() {
+        // Arrange
+        RunScriptRequestDto dto = new RunScriptRequestDto();
+        dto.setId("abc123");
+        dto.setScriptContent("print('Hello World')");
+
+        // Mocks
+        when(client.batch()).thenReturn(batch);
+        when(batch.v1()).thenReturn(v1);
+        when(v1.jobs()).thenReturn(jobOperation);
+        when(jobOperation.inNamespace("my-namespace")).thenReturn(namespacedJobs);
+        when(namespacedJobs.create(any(Job.class))).thenReturn(new Job());
+
+        // Act
+        service.executeRunScript(dto);
+
+        // Assert
+        ArgumentCaptor<Job> jobCaptor = ArgumentCaptor.forClass(Job.class);
+        verify(namespacedJobs, times(1)).create(jobCaptor.capture());
+
+        Job createdJob = jobCaptor.getValue();
+        assertNotNull(createdJob);
+        assertEquals("runscript-job-abc123", createdJob.getMetadata().getName());
+
+        Container container = createdJob.getSpec().getTemplate().getSpec().getContainers().get(0);
+        assertEquals("python", container.getName());
+        assertEquals("python:3.11", container.getImage());
+        assertEquals(List.of("python", "-c", "print('Hello World')"), container.getCommand());
+    }
+
+    @Test
+    void testExecuteRunScript_handlesExceptionGracefully() {
+        // Arrange
+        RunScriptRequestDto dto = new RunScriptRequestDto();
+        dto.setId("abc123");
+        dto.setScriptContent("bad code");
+
+        when(client.batch()).thenReturn(batch);
+        when(batch.v1()).thenReturn(v1);
+        when(v1.jobs()).thenReturn(jobOperation);
+        when(jobOperation.inNamespace("my-namespace")).thenReturn(namespacedJobs);
+        when(namespacedJobs.create(any(Job.class)))
+                .thenThrow(new KubernetesClientException("boom"));
+
+        // Act & Assert
+        assertThrows(KubernetesClientException.class, () -> {
+            service.executeRunScript(dto);
+        });
+
+        verify(namespacedJobs).create(any(Job.class));
+    }
+}
+
+Wat heb je hiermee gedekt?
+
+Test	Gedekt
+Job wordt aangemaakt
+Job naam is correct
+Container config klopt (image, command)
+Foutafhandeling bij .create(...)
+Kubernetes chain correct gemockt
+
+
+Tips & Best Practices
+	•	Voeg @Slf4j toe aan je service en check of logs tijdens .create() worden aangeroepen → dat kun je ook mocken als extra test.
+	•	Overweeg om JobBuilder apart te testen als je complexere logic bouwt.
+	•	Je kunt client.batch().v1().jobs().inNamespace(...) ook in je service constructor injecteren als dat herbruikbaar is.
+
+
+Als je wil, kan ik een voorbeeld maken met:
+	•	een Job met VolumeMounts + ServiceAccount
+	•	of een test voor een dedicated JobBuilder util
+
+Zeg het maar.
