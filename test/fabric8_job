@@ -125,6 +125,29 @@ class KubernetesJobServiceImplTest {
     }
 }
 
+@BeforeEach
+void setup() {
+    when(client.batch()).thenReturn(batch);
+    when(batch.v1()).thenReturn(v1);
+    when(v1.jobs()).thenReturn(jobOperation);
+    when(jobOperation.inNamespace("my-namespace")).thenReturn(namespacedJobs);
+}
+
+when(namespacedJobs.create(any(Job.class))).thenReturn(new Job());
+
+when(namespacedJobs.create(any(Job.class))).thenThrow(new KubernetesClientException("boom"));
+
+@BeforeEach
+void setup() {
+    given(client.batch()).willReturn(batch);
+    given(batch.v1()).willReturn(v1);
+    given(v1.jobs()).willReturn(jobOperation);
+    given(jobOperation.inNamespace(any())).willReturn(namespacedJobs);
+}
+
+given(namespacedJobs.create(any(Job.class))).willReturn(new Job());
+
+
 Wat heb je hiermee gedekt?
 
 Test	Gedekt
