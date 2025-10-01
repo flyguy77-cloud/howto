@@ -1,0 +1,82 @@
+package com.example.kubernetes;
+
+import io.fabric8.kubernetes.api.model.batch.v1.Job;
+import io.fabric8.kubernetes.api.model.batch.v1.JobBuilder;
+import io.fabric8.kubernetes.client.KubernetesClient;
+import io.fabric8.kubernetes.client.server.mock.EnableKubernetesMockClient;
+import io.fabric8.kubernetes.client.server.mock.KubernetesServer;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@EnableKubernetesMockClient
+public class KubernetesJobServiceTest {
+
+    KubernetesClient client;
+    KubernetesServer server;
+
+    KubernetesJobService service;
+
+    @BeforeEach
+    public void setup() {
+        service = new KubernetesJobService(client); // jouw service met de Fabric8 client als dependency
+    }
+
+    @Test
+    public void testExecuteRunScript_createsJobSuccessfully() {
+        // Arrange
+        RunScriptRequestDto requestDto = new RunScriptRequestDto();
+        requestDto.setJobName("test-job");
+        requestDto.setImage("python:3.11");
+        requestDto.setCommand(new String[]{"python", "-c", "print('Hello')"});
+
+        // Act
+        service.executeRunScript(requestDto);
+
+        // Assert
+        Job createdJob = client.batch().v1().jobs().inNamespace("default").withName("test-job").get();
+
+        assertNotNull(createdJob);
+        assertEquals("test-job", createdJob.getMetadata().getName());
+        assertEquals("python:3.11", createdJob.getSpec().getTemplate().getSpec().getContainers().get(0).getImage());
+    }
+
+    @Test
+    public void testExecuteRunScript_jobAlreadyExists_shouldNotCreateDuplicate() {
+        // Arrange
+        Job existingJob = new JobBuilder()
+                .withNewMetadata()
+                .withName("existing-job")
+                .endMetadata()
+                .withNewSpec()
+                    .withNewTemplate()
+                        .withNewSpec()
+                            .addNewContainer()
+                                .withName("runner")
+                                .withImage("python:3.11")
+                            .endContainer()
+                            .withRestartPolicy("Never")
+                        .endSpec()
+                    .endTemplate()
+                .endSpec()
+                .build();
+
+        client.batch().v1().jobs().inNamespace("default").resource(existingJob).create();
+
+        RunScriptRequestDto dto = new RunScriptRequestDto();
+        dto.setJobName("existing-job"); // zelfde naam
+        dto.setImage("python:3.11");
+        dto.setCommand(new String[]{"python", "-c", "print('Again')"});
+
+        // Act
+        service.executeRunScript(dto);
+
+        // Assert
+        Job job = client.batch().v1().jobs().inNamespace("default").withName("existing-job").get();
+        assertNotNull(job);
+        assertEquals("python:3.11", job.getSpec().getTemplate().getSpec().getContainers().get(0).getImage());
+        // eventueel assert op aantal jobs in namespace
+        assertEquals(1, client.batch().v1().jobs().inNamespace("default").list().getItems().size());
+    }
+}
