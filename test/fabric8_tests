@@ -78,5 +78,95 @@ public class KubernetesJobServiceTest {
         assertEquals("python:3.11", job.getSpec().getTemplate().getSpec().getContainers().get(0).getImage());
         // eventueel assert op aantal jobs in namespace
         assertEquals(1, client.batch().v1().jobs().inNamespace("default").list().getItems().size());
+
+
+    @Test
+    public void testExecuteRunScript_throwsKubernetesClientException() {
+        // Arrange: laat de server een fout genereren
+        server.expect()
+            .post()
+            .withPath("/apis/batch/v1/namespaces/default/jobs")
+            .andReturn(403, new Status()) // Forbidden
+            .once();
+
+        RunScriptRequestDto dto = new RunScriptRequestDto();
+        dto.setJobName("fail-job");
+        dto.setImage("python:3.11");
+        dto.setCommand(new String[]{"python", "-c", "print('fail')"});
+
+        // Act & Assert
+        KubernetesClientException ex = assertThrows(
+            KubernetesClientException.class,
+            () -> service.executeRunScript(dto)
+        );
+
+        assertTrue(ex.getMessage().contains("Failure executing: POST"));
+    }
+
+====== Refactor ===
+public class KubernetesJobService {
+
+    private final KubernetesClient client;
+
+    @Value("${kubernetes.client.namespace:default}")
+    private String namespace;
+
+    public KubernetesJobService(KubernetesClient client) {
+        this.client = client;
+    }
+
+    public void executeRunScript(RunScriptRequestDto dto) {
+        // gebruikt namespace, die via Spring @Value wordt geïnjecteerd
+        client.batch().v1().jobs().inNamespace(namespace)
+            .resource(buildJob(dto))
+            .create();
+    }
+
+    private Job buildJob(RunScriptRequestDto dto) {
+        // Bouw de Job zoals eerder
+        return new JobBuilder()
+                .withNewMetadata().withName(dto.getJobName()).endMetadata()
+                .withNewSpec()
+                    .withNewTemplate()
+                        .withNewSpec()
+                            .addNewContainer()
+                                .withName("runner")
+                                .withImage(dto.getImage())
+                                .withCommand(dto.getCommand())
+                            .endContainer()
+                            .withRestartPolicy("Never")
+                        .endSpec()
+                    .endTemplate()
+                .endSpec()
+                .build();
+    }
+}
+
+=============
+import org.springframework.test.util.ReflectionTestUtils;
+
+@BeforeEach
+public void setup() {
+    service = new KubernetesJobService(client);
+    // Injecteer de 'namespace' waarde zoals Spring normaal zou doen
+    ReflectionTestUtils.setField(service, "namespace", "default");
+}
+
+@Test
+public void testExecuteRunScript_createsJobSuccessfully() {
+    RunScriptRequestDto requestDto = new RunScriptRequestDto();
+    requestDto.setJobName("test-job");
+    requestDto.setImage("python:3.11");
+    requestDto.setCommand(new String[]{"python", "-c", "print('Hello')"});
+
+    service.executeRunScript(requestDto);
+
+    Job createdJob = client.batch().v1().jobs()
+        .inNamespace("default")
+        .withName("test-job")
+        .get();
+
+    assertNotNull(createdJob);
+}
     }
 }
