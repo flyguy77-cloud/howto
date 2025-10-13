@@ -1,0 +1,300 @@
+TL;DR – Wat moet je doen?
+	1.	Datamodel uitbreiden (DB / DTO’s / Entity)
+	2.	Logs en status ophalen via Fabric8 (bijv. .getStatus() en .getLog())
+	3.	Opslaan in je DB of logservice (bijv. PostgreSQL, Loki, Elasticsearch)
+	4.	Async ophalen of op job completion triggeren (optioneel)
+
+⸻
+
+1. Voorstel nieuw datamodel
+
+Je kunt een nieuwe entity maken, of je bestaande JobExecutionResult of RunScriptExecution uitbreiden.
+
+@Entity
+@Table(name = "job_executions")
+public class JobExecution {
+  
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    private String jobName;
+    private String namespace;
+    private String status; // bijv. "Succeeded", "Failed", "Running", etc.
+
+    @Column(columnDefinition = "TEXT")
+    private String logs;
+
+    private Instant startedAt;
+    private Instant finishedAt;
+    
+    private String nodeName;     // optioneel
+    private String podName;      // optioneel
+    private String containerName;// optioneel
+
+    // getters & setters
+}
+
+
+⸻
+
+2. Logs en status ophalen in Java (Fabric8)
+
+Haal de Pod op bij de Job
+
+Job job = client.batch().v1().jobs().inNamespace(namespace).withName(jobName).get();
+
+PodList pods = client.pods().inNamespace(namespace)
+    .withLabel("job-name", jobName)
+    .list();
+
+Pod pod = pods.getItems().get(0); // meestal 1 pod per job
+String podName = pod.getMetadata().getName();
+String logs = client.pods().inNamespace(namespace).withName(podName).getLog();
+
+Status uitlezen
+
+String status = job.getStatus().getConditions().stream()
+    .filter(cond -> "Complete".equals(cond.getType()) || "Failed".equals(cond.getType()))
+    .map(JobCondition::getType)
+    .findFirst()
+    .orElse("Running");
+
+
+⸻
+
+3. Opslaan in repository
+
+Maak een repository aan:
+
+@Repository
+public interface JobExecutionRepository extends JpaRepository<JobExecution, Long> {
+    Optional<JobExecution> findByJobName(String jobName);
+}
+
+Sla op in je service:
+
+JobExecution execution = new JobExecution();
+execution.setJobName(jobName);
+execution.setNamespace(namespace);
+execution.setLogs(logs);
+execution.setStatus(status);
+execution.setStartedAt(job.getMetadata().getCreationTimestamp().toInstant());
+execution.setFinishedAt(Instant.now()); // of van de pod status
+
+repository.save(execution);
+
+
+⸻
+
+4. Wanneer uitvoeren?
+
+Optie 1: Na job creatie
+	•	Start job → wacht async → poll status/logs → sla op.
+	•	Nadeel: polling vereist schedulers of job-watchers.
+
+Optie 2: Externe trigger (frontend of callback)
+	•	UI vraagt: “Geef de status en log van job X”
+	•	Voordeel: geen async gedoe, stateless en schaalbaar.
+
+Optie 3: Kubernetes Event Watcher / CronJob
+	•	Gebruik Fabric8 watcher of cronjob om afgewerkte jobs te verwerken.
+
+⸻
+
+5. Extra aandachtspunten
+	•	Grote logs? → Overweeg logrotate, compressie of opslag in aparte tabel.
+	•	Privacygevoelig? → Scrub logs vóór opslag.
+	•	Meerdere containers in pod? → Gebruik .getContainerLogs("naam").
+
+⸻
+
+Testcode voorbeeld
+
+@Test
+public void testJobLogsAndStatusStored() {
+    JobExecution exec = jobExecutionRepo.findByJobName("runscript-42").orElseThrow();
+    assertEquals("Succeeded", exec.getStatus());
+    assertTrue(exec.getLogs().contains("Execution complete"));
+}
+
+
+⸻
+
+Conclusie
+
+Door je backend uit te breiden met een JobExecution entiteit en de logs/status via Fabric8 op te halen zodra de job klaar is, kun je eenvoudig run-historie beheren. Kies of je dit automatisch doet, op aanvraag (via de UI), of via een watcher.
+
+
+
+
+
+⸻
+
+TL;DR – Wat jij zoekt:
+
+Een manier om:
+	•	Jobs traceerbaar te maken na afloop (ook al zijn ze tijdelijk/vluchtig),
+	•	Jobs te relateren aan functionele workflowcontext (welke workflow, welke scripts, wie triggerde),
+	•	Logs en status op te slaan, herleidbaar voor gebruiker,
+	•	En niet alleen met node-id’s of Kubernetes jobnamen te werken die voor een gebruiker onduidelijk zijn.
+
+⸻
+
+Concrete aanbevelingen
+
+1. Breid je backend JobExecution model uit met functionele metadata
+
+Je gebruikt nu waarschijnlijk alleen jobName, status, logs.
+
+Voeg dit toe:
+
+private String workflowName;     // bijv. 'HR Rapportage'
+private UUID workflowInstanceId; // logisch ID van deze run
+private String runscriptNodeLabel; // bijv. 'Genereer rapport'
+private String triggeredBy;      // gebruikersnaam / e-mailadres
+private Instant triggeredAt;
+
+@Column(columnDefinition = "TEXT")
+private String scriptIdsJson; // ["file1.py", "file2.py"]
+
+Zo kun je in je UI of logging later zeggen:
+
+“Workflow HR Rapportage gestart door m.jansen@rijksoverheid.nl, node Genereer rapport, met scripts X, Y, om 14:03.”
+
+⸻
+
+2. Koppel de JobExecution aan je frontend-context
+
+Je frontend weet welke RunScript-node het is, en welke LoadScript-nodes eraan hangen.
+
+Je kunt dus deze info meesturen in je payload:
+
+{
+  "workflowId": "uuid-1234",
+  "workflowName": "HR Rapportage",
+  "nodeId": "runscript_3",
+  "nodeLabel": "Genereer rapport",
+  "triggeredBy": "m.jansen@rijksoverheid.nl",
+  "scriptIds": ["src/rapport.py", "utils/helper.py"]
+}
+
+In je backend DTO:
+
+public class RunScriptRequestDto {
+    private UUID workflowId;
+    private String workflowName;
+    private String nodeId;
+    private String nodeLabel;
+    private String triggeredBy;
+    private List<String> scriptIds;
+    private String image;
+    private String[] command;
+}
+
+Die data gebruik je dan om het JobExecution object op te bouwen en te bewaren voordat je de Job aanmaakt.
+
+⸻
+
+3. Gebruik een logische Job-ID die ook in Kubernetes gebruikt wordt
+
+Gebruik bijv. deze formule voor je Job name:
+
+String jobName = "wf-" + workflowId + "-node-" + nodeId + "-ts-" + System.currentTimeMillis();
+
+Zo weet je altijd:
+	•	Wat hoort bij wat
+	•	Welke job hoort bij welke node/workflow
+	•	Dat jobs unieke namen hebben (en niet elkaar overschrijven)
+
+En je kunt dit jobName ook in JobExecution opslaan.
+
+⸻
+
+4. Voorzie gebruikers in de frontend van een herleidbare “uitvoeringstabel”
+
+Toon per workflow de vorige runs:
+
+Datum	Gebruiker	Node	Status	Actie
+13-10-2025	m.jansen@…	Genereer rapport	✅ Geslaagd	Bekijk log
+12-10-2025	s.peeters@…	Genereer rapport	❌ Mislukt	Bekijk log
+
+
+⸻
+
+5. Waarom node-id’s alleen niet voldoende zijn
+
+Je zei terecht:
+
+“Het node-id zegt niks voor de gebruiker.”
+
+Klopt. Daarom gebruik je het:
+	•	intern voor technisch mappen (edges, validatie),
+	•	maar vervang je het in de UI door node labels of beschrijvingen.
+
+Zorg dus dat je in je database naast nodeId ook het nodeLabel opslaat:
+
+private String nodeLabel; // bijv. "Genereer HR rapportage"
+
+
+⸻
+
+Voorbeeldcode
+
+DTO voorbeeld
+
+public class RunScriptRequestDto {
+    private UUID workflowId;
+    private String workflowName;
+    private String nodeId;
+    private String nodeLabel;
+    private String triggeredBy;
+    private List<String> scriptIds;
+    private String image;
+    private String[] command;
+}
+
+Entity voorbeeld
+
+@Entity
+public class JobExecution {
+    @Id
+    private UUID id;
+
+    private UUID workflowId;
+    private String workflowName;
+    private String nodeId;
+    private String nodeLabel;
+    private String triggeredBy;
+
+    private String jobName;
+    private String status;
+
+    @Column(columnDefinition = "TEXT")
+    private String logs;
+
+    private Instant startedAt;
+    private Instant finishedAt;
+
+    @Column(columnDefinition = "TEXT")
+    private String scriptIdsJson;
+}
+
+
+⸻
+
+Bonus: Script bundle of project dependency?
+
+Als scripts afhankelijk zijn van elkaar:
+	•	Kun je alle gerelateerde bestanden ophalen uit GitLab (bijv. hele directory).
+	•	En als het echt complex wordt: denk aan een mini package systeem: ZIP de folder en mount die in de Job pod.
+	•	Of clone het hele project binnen de job (zoals eerder besproken).
+
+⸻
+TL;DR conclusie
+
+Gebruik nodeId’s puur intern.
+Voor gebruikers én logging:
+	•	Geef jobs een herleidbare naam,
+	•	Sla de context op: workflow, user, label, scripts,
+	•	Gebruik dit voor UI, logboek en debugging.
