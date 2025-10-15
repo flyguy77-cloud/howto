@@ -1,0 +1,52 @@
+@Entity
+@Table(name = "job_execution")
+public class JobExecutionEntity {
+
+    @Id
+    private UUID id;
+
+    private Instant startTime;
+
+    private Instant endTime;
+
+    // andere velden...
+}
+
+Flyway migratie:
+
+CREATE TABLE job_execution (
+    id UUID PRIMARY KEY,
+    start_time TIMESTAMPTZ,
+    end_time TIMESTAMPTZ
+);
+
+That’s it. Geen converter nodig, geen custom mapper — Hibernate snapt dit out of the box.
+
+⸻
+
+Waarom werkt dit?
+
+De java.time.Instant is het equivalent van een UTC timestamp, dus Hibernate weet dat het TIMESTAMPTZ moet gebruiken in PostgreSQL.
+Dat wordt opgeslagen als:
+
+2025-10-15 18:43:00+00
+
+En teruggegeven als een Instant.
+
+⸻
+
+Let op:
+	•	Gebruik TIMESTAMPTZ, niet TIMESTAMP WITHOUT TIME ZONE, tenzij je bewust lokale tijd zonder tijdzonecontext opslaat (en dat wil je hier niet).
+	•	Zorg dat je server en je DB beide in UTC draaien (of dat je consistentheid forceert) → dit voorkomt verrassingen.
+
+⸻
+
+Bonus: wat als je LocalDateTime gebruikt?
+
+Als je dit had gedaan:
+
+private LocalDateTime startTime;
+
+Dan zou Hibernate het mappen naar TIMESTAMP WITHOUT TIME ZONE, wat vaak verkeerde tijd geeft als je tijdzones moet respecteren.
+Daarom is Instant veiliger & explicieter.
+Wil je ook custom logica om in je DTO bijv. automatisch epoch millis in/uit te lezen bij serialisatie? Dan geef ik je ook een Jackson + Lombok setup mee. Geef maar een seintje.
