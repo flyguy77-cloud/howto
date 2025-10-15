@@ -1,0 +1,160 @@
+Structuuroverzicht
+
+Gebruik @Lob (Large object) voor de logs datamodel
+
+1. JobExecution entity (vereenvoudigd)
+
+@Entity
+public class JobExecution {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    private String jobName;
+    private String nodeId;
+    private String status;
+    private String logs;
+
+    private Instant startTime;
+    private Instant endTime;
+
+    // getters/setters
+}
+
+2. De JobExecutionRepository
+
+@Repository
+public interface JobExecutionRepository extends JpaRepository<JobExecution, Long> {
+    Optional<JobExecution> findByJobName(String jobName);
+}
+
+
+⸻
+
+Fabric8-achtergrond: log ophalen van een Pod
+
+Je haalt logs op met:
+
+InputStream logStream = client.pods()
+    .inNamespace(namespace)
+    .withName(podName)
+    .inContainer("main")
+    .getLogInputStream();
+
+En leest dat uit met een BufferedReader.
+
+⸻
+
+Complete flow: Watcher + Log Capture + Opslag
+
+In je JobServiceImpl
+
+@Service
+@RequiredArgsConstructor
+public class JobExecutionServiceImpl implements JobExecutionService {
+
+    private final KubernetesClient client;
+    private final JobExecutionRepository jobExecutionRepository;
+
+    @Value("${kubernetes.client.namespace}")
+    private String namespace;
+
+    @Override
+    public void executeRunScript(RunScriptRequestDto dto) {
+        String jobName = dto.getJobName();
+        String nodeId = dto.getNodeId();
+
+        Job job = buildJobFromDto(dto); // ← jouw bestaande jobbuilder
+
+        client.batch().v1().jobs()
+              .inNamespace(namespace)
+              .resource(job)
+              .create();
+
+        JobExecution execution = new JobExecution();
+        execution.setJobName(jobName);
+        execution.setNodeId(nodeId);
+        execution.setStartTime(Instant.now());
+        execution.setStatus("RUNNING");
+        jobExecutionRepository.save(execution);
+
+        watchPodAndCaptureLogs(jobName, execution);
+    }
+
+    private void watchPodAndCaptureLogs(String jobName, JobExecution execution) {
+        client.pods()
+              .inNamespace(namespace)
+              .withLabel("job-name", jobName)
+              .watch(new Watcher<>() {
+                  @Override
+                  public void eventReceived(Action action, Pod pod) {
+                      String phase = pod.getStatus().getPhase();
+
+                      if ("Succeeded".equals(phase) || "Failed".equals(phase)) {
+                          try {
+                              String logOutput = captureLogs(pod.getMetadata().getName());
+                              execution.setLogs(logOutput);
+                              execution.setStatus(phase);
+                              execution.setEndTime(Instant.now());
+                              jobExecutionRepository.save(execution);
+                          } catch (IOException e) {
+                              execution.setStatus("LOG_ERROR");
+                              execution.setEndTime(Instant.now());
+                              execution.setLogs("Log capture failed: " + e.getMessage());
+                              jobExecutionRepository.save(execution);
+                          }
+                      }
+                  }
+
+                  @Override
+                  public void onClose(WatcherException e) {
+                      // eventueel loggen of fallback handling
+                  }
+              });
+    }
+
+    private String captureLogs(String podName) throws IOException {
+        InputStream logStream = client.pods()
+            .inNamespace(namespace)
+            .withName(podName)
+            .inContainer("main")
+            .getLogInputStream();
+
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(logStream))) {
+            return reader.lines().collect(Collectors.joining("\n"));
+        }
+    }
+}
+
+
+⸻
+
+Tips voor productie
+
+Onderdeel	Advies
+getLogInputStream()	Gebruik try-with-resources om memory leaks te voorkomen
+Lange logs	Overweeg logs op te slaan als bestand op PVC bij > 5000+ regels
+Foutafhandeling	Zorg voor fallback status = "LOG_FAILED" als lezen faalt
+Tijdslimiet	Voeg optioneel een timeout of ExecutorService toe
+Clean-up	Laat jobs automatisch verwijderen met ttlSecondsAfterFinished
+
+
+⸻
+
+Bonus: Inline scripts ondersteunen?
+
+Wil je inline scripts ook loggen? Dan geef je in RunScriptRequestDto bijv.:
+
+{
+  "jobName": "inline-xyz",
+  "nodeId": "inline_1",
+  "inlineScript": "print('hello world')"
+}
+
+En dan zet je in je job een command zoals:
+
+.withCommand("python", "-c", dto.getInlineScript())
+
+Log capturing blijft hetzelfde.
+
+⸻
