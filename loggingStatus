@@ -53,6 +53,8 @@ In je JobServiceImpl
 @RequiredArgsConstructor
 public class JobExecutionServiceImpl implements JobExecutionService {
 
+    private static final Logger log = LoggerFactory.getLogger(JobExecutionServiceImpl.class);
+
     private final KubernetesClient client;
     private final JobExecutionRepository jobExecutionRepository;
 
@@ -66,41 +68,83 @@ public class JobExecutionServiceImpl implements JobExecutionService {
 
         Job job = buildJobFromDto(dto); // ← jouw bestaande jobbuilder
 
+        // Voeg label toe aan job om pod herkenbaar te maken
+        job.getMetadata().getLabels().putIfAbsent("job-name", jobName);
+
         client.batch().v1().jobs()
               .inNamespace(namespace)
               .resource(job)
               .create();
 
         JobExecution execution = new JobExecution();
+        execution.setId(UUID.randomUUID()); // tenzij @GeneratedValue wordt gebruikt
         execution.setJobName(jobName);
         execution.setNodeId(nodeId);
         execution.setStartTime(Instant.now());
         execution.setStatus("RUNNING");
+
         jobExecutionRepository.save(execution);
 
-        watchPodAndCaptureLogs(jobName, execution);
+        // Wacht kort op pod voordat watcher start
+        waitForPodAndStartWatcher(jobName, execution);
     }
 
-    private void watchPodAndCaptureLogs(String jobName, JobExecution execution) {
+    private void waitForPodAndStartWatcher(String jobName, JobExecution execution) {
+        final int maxAttempts = 10;
+        final int delayMillis = 500;
+
+        for (int i = 0; i < maxAttempts; i++) {
+            PodList podList = client.pods()
+                                    .inNamespace(namespace)
+                                    .withLabel("job-name", jobName)
+                                    .list();
+
+            if (podList != null && !podList.getItems().isEmpty()) {
+                String podName = podList.getItems().get(0).getMetadata().getName();
+                log.info("Pod {} gevonden voor job {}", podName, jobName);
+                watchPodAndCaptureLogs(podName, execution);
+                return;
+            }
+
+            try {
+                Thread.sleep(delayMillis);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.error("Watcher start onderbroken", e);
+                return;
+            }
+        }
+
+        log.warn("Geen pod gevonden voor job {} na {} pogingen", jobName, maxAttempts);
+        execution.setStatus("POD_NOT_FOUND");
+        execution.setEndTime(Instant.now());
+        execution.setLogOutput("Pod is niet gevonden voor job: " + jobName);
+        jobExecutionRepository.save(execution);
+    }
+
+    private void watchPodAndCaptureLogs(String podName, JobExecution execution) {
         client.pods()
               .inNamespace(namespace)
-              .withLabel("job-name", jobName)
+              .withName(podName)
               .watch(new Watcher<>() {
                   @Override
                   public void eventReceived(Action action, Pod pod) {
                       String phase = pod.getStatus().getPhase();
+                      log.info("Pod {} in fase {}", podName, phase);
 
                       if ("Succeeded".equals(phase) || "Failed".equals(phase)) {
                           try {
-                              String logOutput = captureLogs(pod.getMetadata().getName());
-                              execution.setLogs(logOutput);
-                              execution.setStatus(phase);
+                              String logOutput = captureLogs(podName);
+                              execution.setLogOutput(logOutput);
+                              execution.setStatus(phase.toUpperCase());
                               execution.setEndTime(Instant.now());
                               jobExecutionRepository.save(execution);
+                              log.info("Log voor job {} opgeslagen ({} bytes)", execution.getJobName(), logOutput.length());
                           } catch (IOException e) {
+                              log.error("Fout bij log ophalen van pod {}", podName, e);
                               execution.setStatus("LOG_ERROR");
                               execution.setEndTime(Instant.now());
-                              execution.setLogs("Log capture failed: " + e.getMessage());
+                              execution.setLogOutput("Log ophalen mislukt: " + e.getMessage());
                               jobExecutionRepository.save(execution);
                           }
                       }
@@ -108,7 +152,7 @@ public class JobExecutionServiceImpl implements JobExecutionService {
 
                   @Override
                   public void onClose(WatcherException e) {
-                      // eventueel loggen of fallback handling
+                      log.warn("Watcher gesloten voor pod {}: {}", podName, e.getMessage());
                   }
               });
     }
@@ -117,7 +161,7 @@ public class JobExecutionServiceImpl implements JobExecutionService {
         InputStream logStream = client.pods()
             .inNamespace(namespace)
             .withName(podName)
-            .inContainer("main")
+            .inContainer("main") // pas aan als je container een andere naam heeft
             .getLogInputStream();
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(logStream))) {
