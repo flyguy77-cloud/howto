@@ -1,0 +1,33 @@
+package org.example.localizationApp;
+
+import java.util.Locale;
+import java.util.Random;
+import java.util.ResourceBundle;
+
+public class DiceApp {
+    public static void main(String[] args) {
+        // Check if locale argument is provided
+        if (args.length == 0) {
+            System.out.println("Usage: java DiceApp <language-code> (e.g., 'nl' or 'en')");
+            return;
+        }
+
+        // Setup locale and resource bundle
+        Locale locale = new Locale.Builder().setLanguage(args[0]).build();
+
+        System.out.println("Default locale: " + Locale.getDefault());
+
+        ResourceBundle bundle = ResourceBundle.getBundle("DiceApp", locale);
+
+        // Create a Random instance
+        Random random = new Random();
+
+        // Generate 10 random ints from 1 to 6 (inclusive)
+        random.ints(10, 1, 7) // upper bound exclusive, so 7
+                .forEach(n -> {
+                    String key = String.valueOf(n); // e.g., "1"
+                    String word = bundle.getString(key);
+                    System.out.println(word);
+                });
+    }
+}
