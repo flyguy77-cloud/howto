@@ -1,0 +1,139 @@
+import java.util.Random;
+
+public class DiceGame1 {
+    public static void main(String[] args) {
+        Thread[] threads = new Thread[10];
+        Random random = new Random();
+
+        for (int i = 0; i < 10; i++) {
+            threads[i] = new Thread(() -> {
+                int throwResult = random.nextInt(6) + 1;
+                System.out.println("Rolled: " + throwResult);
+            });
+            threads[i].start();
+        }
+
+        // Wacht tot alle threads klaar zijn
+        for (Thread t : threads) {
+            try {
+                t.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        System.out.println("end of dice game");
+    }
+}
+
++++
+import java.util.Random;
+import java.util.concurrent.*;
+
+public class DiceGame2 {
+    public static void main(String[] args) {
+        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor(); // Java 21 virtual threads
+        Random random = new Random();
+
+        Future<?>[] results = new Future[10];
+
+        for (int i = 0; i < 10; i++) {
+            results[i] = executor.submit(() -> {
+                int throwResult = random.nextInt(6) + 1;
+                System.out.println("Rolled: " + throwResult);
+            });
+        }
+
+        // Wacht op alle taken
+        for (Future<?> result : results) {
+            try {
+                result.get(); // blokkeert tot klaar
+            } catch (InterruptedException | ExecutionException e) {
+                e.printStackTrace();
+            }
+        }
+
+        executor.shutdown();
+        System.out.println("end of dice game");
+    }
+}
+
++++
+
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.*;
+
+public class DiceGame3 {
+    public static void main(String[] args) {
+        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor(); // Java 21 style
+        Random random = new Random();
+
+        List<Callable<Integer>> tasks = 
+            java.util.stream.IntStream.range(0, 10)
+            .mapToObj(i -> (Callable<Integer>) () -> random.nextInt(6) + 1)
+            .toList();
+
+        try {
+            List<Future<Integer>> results = executor.invokeAll(tasks);
+            for (Future<Integer> result : results) {
+                System.out.println("Rolled: " + result.get());
+            }
+        } catch (InterruptedException | ExecutionException e) {
+            e.printStackTrace();
+        } finally {
+            executor.shutdown();
+        }
+
+        System.out.println("end of dice game");
+    }
+}
+
+2.
+
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+public class MultiThreadedStats {
+    public static void main(String[] args) {
+        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor(); // Java 21 virtual threads
+        Random random = new Random();
+
+        // Thread-safe lijst
+        List<Integer> numbers = new CopyOnWriteArrayList<>();
+
+        // AtomicInteger voor min en max
+        AtomicInteger highest = new AtomicInteger(Integer.MIN_VALUE);
+        AtomicInteger lowest = new AtomicInteger(Integer.MAX_VALUE);
+
+        // Verzamel alle taken
+        List<Callable<Void>> tasks = 
+            java.util.stream.IntStream.range(0, 10)
+                .mapToObj(i -> (Callable<Void>) () -> {
+                    int value = random.nextInt(100); // 0 - 99
+                    numbers.add(value);
+                    
+                    // update max en min veilig
+                    highest.accumulateAndGet(value, Math::max);
+                    lowest.accumulateAndGet(value, Math::min);
+                    
+                    return null;
+                }).toList();
+
+        try {
+            executor.invokeAll(tasks); // start alles parallel en wacht op afronding
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            executor.shutdown();
+        }
+
+        // Resultaten tonen
+        System.out.println("Generated numbers: " + numbers);
+        System.out.println("Highest: " + highest.get());
+        System.out.println("Lowest: " + lowest.get());
+    }
+}
