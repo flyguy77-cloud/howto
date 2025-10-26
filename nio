@@ -1,0 +1,175 @@
+import java.io.IOException;
+import java.nio.file.*;
+import java.util.Comparator;
+import java.util.stream.Stream;
+
+public class DirApp {
+    public static void main(String[] args) {
+        Path basePath = Paths.get("a/b/c/d");
+
+        try {
+            // 1. Structuur aanmaken
+            Files.createDirectories(basePath);
+            System.out.println("Directories created: " + basePath.toAbsolutePath());
+
+            // 2. Toon de structuur
+            System.out.println("\nDirectory structure:");
+            try (Stream<Path> paths = Files.walk(Paths.get("a"))) {
+                paths.forEach(System.out::println);
+            }
+
+            // 3. Verwijder van diep naar boven
+            System.out.println("\nDeleting structure...");
+            try (Stream<Path> walk = Files.walk(Paths.get("a"))) {
+                walk.sorted(Comparator.reverseOrder()) // begin bij 'd', dan 'c', enz.
+                    .forEach(path -> {
+                        try {
+                            Files.delete(path);
+                            System.out.println("Deleted: " + path);
+                        } catch (IOException e) {
+                            System.err.println("Failed to delete " + path + ": " + e.getMessage());
+                        }
+                    });
+            }
+
+            System.out.println("\nDirectory structure deleted.");
+
+        } catch (IOException e) {
+            System.err.println("Something went wrong: " + e.getMessage());
+        }
+    }
+}
+
+-----2
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.List;
+
+public class UpperTextApp {
+    public static void main(String[] args) {
+        if (args.length < 2) {
+            System.err.println("Usage: java UpperTextApp <inputFile> <outputFile>");
+            return;
+        }
+
+        Path inputFile = Paths.get(args[0]);
+        Path outputFile = Paths.get(args[1]);
+
+        try {
+            // 1. Lees regels uit het inputbestand
+            List<String> lines = Files.readAllLines(inputFile);
+
+            // 2. Zet alles om naar hoofdletters
+            List<String> upperLines = lines.stream()
+                                           .map(String::toUpperCase)
+                                           .toList();
+
+            // 3. Schrijf naar outputbestand
+            Files.write(outputFile, upperLines);
+
+            System.out.println("File written successfully to " + outputFile);
+
+        } catch (IOException e) {
+            System.err.println("Error processing files: " + e.getMessage());
+        }
+    }
+}
+
+
+
+-----3
+import java.io.*;
+import java.util.ArrayList;
+import java.util.List;
+
+public class SerializeList {
+
+    public static void main(String[] args) {
+        List<String> list = List.of(args); // Immutable list (mogelijk niet serialiseerbaar!)
+        String filename = "words.obj";
+
+        tryWrite(list, filename);
+
+        List<String> result = tryRead(filename);
+        System.out.println("Read list from file:");
+        result.forEach(System.out::println);
+    }
+
+    static void tryWrite(List<String> list, String name) {
+        if (!(list instanceof Serializable)) {
+            System.err.println("List is not serializable. Copying to ArrayList...");
+            list = new ArrayList<>(list); // Maak hem serialiseerbaar
+        }
+
+        try (ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(name))) {
+            out.writeObject(list);
+            System.out.println("List written to " + name);
+        } catch (IOException e) {
+            System.err.println("Error writing list: " + e.getMessage());
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    static List<String> tryRead(String name) {
+        try (ObjectInputStream in = new ObjectInputStream(new FileInputStream(name))) {
+            Object obj = in.readObject();
+            return (List<String>) obj;
+        } catch (IOException | ClassNotFoundException e) {
+            System.err.println("Error reading list: " + e.getMessage());
+            return List.of(); // Lege immutable fallback
+        }
+    }
+}
+
+---4
+import java.io.IOException;
+import java.nio.file.*;
+import java.util.Comparator;
+import java.util.stream.Stream;
+
+public class NewDirsApp {
+    public static void main(String[] args) {
+        Path base = Paths.get("a");
+        Path nested = Paths.get("b/c/d");
+        Path fullPath = base.resolve(nested); // → a/b/c/d
+
+        try {
+            // 1. Maak ./a aan als losse dir
+            if (!Files.exists(base)) {
+                Files.createDirectory(base);
+                System.out.println("Created base directory: " + base);
+            }
+
+            // 2. Maak a/b/c/d aan in één klap
+            Files.createDirectories(fullPath);
+            System.out.println("Created full nested path: " + fullPath.toAbsolutePath());
+
+            // 3. Toon resultaat
+            System.out.println("\nDirectory structure:");
+            try (Stream<Path> paths = Files.walk(base)) {
+                paths.forEach(System.out::println);
+            }
+
+            // 4. (optioneel) Verwijder alles van diep naar boven
+            System.out.println("\nCleaning up...");
+            try (Stream<Path> paths = Files.walk(base)) {
+                paths.sorted(Comparator.reverseOrder()) // diepste eerst
+                     .forEach(path -> {
+                         try {
+                             Files.delete(path);
+                             System.out.println("Deleted: " + path);
+                         } catch (IOException e) {
+                             System.err.println("Failed to delete " + path + ": " + e.getMessage());
+                         }
+                     });
+            }
+
+            System.out.println("Cleanup done.");
+
+        } catch (IOException e) {
+            System.err.println("Something went wrong: " + e.getMessage());
+        }
+    }
+}
