@@ -1,0 +1,130 @@
+public record Person(String firstName, String lastName, String email) {
+
+    // Overloaded constructor met String[] input
+    public Person(String[] parts) {
+        this(parts[0].trim(), parts[1].trim(), parts[2].trim());
+    }
+}
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Comparator;
+import java.util.stream.Stream;
+
+public class PersonApp {
+    public static void main(String[] args) {
+        try (Stream<String> lines = Files.lines(Paths.get("Customers.csv"))) {
+
+            lines.skip(1) // header overslaan
+                 .map(line -> line.split(",")) // split op komma
+                 .map(Person::new) // converteer naar record via constructor
+                 .sorted(Comparator.comparing(Person::lastName)) // sorteer op achternaam
+                 .forEach(System.out::println); // toon elk record
+
+        } catch (IOException e) {
+            System.err.println("Fout bij het lezen van het bestand: " + e.getMessage());
+        }
+    }
+}
+
+---2
+@Override
+public boolean equals(Object o) {
+  return (o instanceof Item(Id(String name1, String brand1), Price _)) &&
+         id.name().equals(name1) &&
+         id.brand().equals(brand1);
+}
+
+public class ItemApp {
+  enum Currency { EUR, USD, GBP }
+
+  record Price(double amount, Currency currency) {}
+  record Id(String name, String brand) {}
+  record Item(Id id, Price price) {
+    @Override
+    public boolean equals(Object o) {
+      return (o instanceof Item(Id(String name1, String brand1), Price _)) &&
+             id.name().equals(name1) &&
+             id.brand().equals(brand1);
+    }
+
+    @Override
+    public int hashCode() {
+      return id.name().hashCode() + 31 * id.brand().hashCode();
+    }
+  }
+
+  public static void main(String[] args) {
+    var item1 = new Item(new Id("Shoes", "Nike"), new Price(99.99, Currency.EUR));
+    var item2 = new Item(new Id("Shoes", "Nike"), new Price(120.00, Currency.USD)); // zelfde id
+    var item3 = new Item(new Id("Shoes", "Adidas"), new Price(99.99, Currency.EUR)); // andere brand
+
+    System.out.println(item1.equals(item2)); // true
+    System.out.println(item2.equals(item3)); // false
+  }
+}
+
+---3
+public sealed interface Shape permits Circle, Rectangle {
+    default double area() {
+        return switch (this) {
+            case Circle c -> Math.PI * c.radius() * c.radius();
+            case Rectangle r -> r.width() * r.height();
+        };
+    }
+}
+
+public record Circle(double radius) implements Shape {}
+
+
+public sealed class Rectangle implements Shape permits Square {
+    private final double width;
+    private final double height;
+
+    public Rectangle(double width, double height) {
+        this.width = width;
+        this.height = height;
+    }
+
+    public double width() {
+        return width;
+    }
+
+    public double height() {
+        return height;
+    }
+
+    @Override
+    public String toString() {
+        return "Rectangle(" + width + " x " + height + ")";
+    }
+}
+
+public final class Square extends Rectangle {
+    public Square(double side) {
+        super(side, side);
+    }
+
+    @Override
+    public String toString() {
+        return "Square(" + super.width() + ")";
+    }
+}
+
+import java.util.List;
+
+public class ShapeApp {
+    public static void main(String[] args) {
+        List<Shape> shapes = List.of(
+                new Circle(3),
+                new Rectangle(4, 5),
+                new Square(6)
+        );
+
+        for (Shape shape : shapes) {
+            System.out.println(shape + " has area: " + shape.area());
+        }
+    }
+}
+
