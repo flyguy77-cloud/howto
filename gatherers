@@ -1,0 +1,134 @@
+import java.util.stream.*;
+import java.util.List;
+import java.util.stream.Gatherers;
+
+public class UniqueAdjacent {
+    public static void main(String[] args) {
+        List<Integer> input = List.of(1, 1, 2, 2, 2, 3, 1, 1);
+
+        List<Integer> result = input.stream()
+            .gather(Gatherers.windowSliding(2, 1))       // Vensters van 2 met 1 overlap
+            .filter(window -> window.size() == 2)         // Alleen complete vensters
+            .filter(w -> !w.get(0).equals(w.get(1)))      // Filter alleen als waarde verandert
+            .map(w -> w.get(1))                           // Pak de nieuwe (unieke) waarde
+            .collect(Collectors.toCollection(() -> {
+                // Voeg eerste waarde handmatig toe (die ontbreekt in eerste venster)
+                List<Integer> list = new java.util.ArrayList<>();
+                list.add(input.get(0)); // Eerste altijd behouden
+                return list;
+            }));
+
+        System.out.println(result); // [1, 2, 3, 1]
+    }
+}
+
+---
+import java.util.*;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
+
+public class DropWhileDemo {
+
+    public static void main(String[] args) {
+        List<Integer> input = List.of(1, 2, 3, 4, 1, 2);
+
+        // Drop zolang getallen < 4 zijn
+        List<Integer> output = dropWhile(input.stream(), n -> n < 4).toList();
+
+        System.out.println("Resultaat: " + output); // Verwacht: [4, 1, 2]
+    }
+
+    public static <T> Stream<T> dropWhile(Stream<T> stream, Predicate<T> predicate) {
+        Iterator<T> iterator = stream.iterator();
+        List<T> result = new ArrayList<>();
+        boolean dropping = true;
+
+        while (iterator.hasNext()) {
+            T value = iterator.next();
+
+            if (dropping && predicate.test(value)) {
+                continue; // Zolang de voorwaarde waar is: skip
+            }
+
+            // Zodra de predicate false wordt, alles toevoegen
+            dropping = false;
+            result.add(value);
+        }
+
+        return result.stream();
+    }
+}
+
+----
+import java.util.stream.Gatherer;
+import java.util.stream.Stream;
+
+public class DifferenceGatherer {
+
+    public static void main(String[] args) {
+        Stream.of(1, 4, 2, 8)
+              .gather(diffGatherer())
+              .forEach(System.out::println);  // Output: 3, -2, 6
+    }
+
+    public static Gatherer<Integer, ?, Integer> diffGatherer() {
+        return Gatherer.ofSequential(
+            () -> new int[1], // state: array met 1 element om vorige waarde op te slaan
+            (prevHolder, current, downstream) -> {
+                if (prevHolder[0] != 0 || current == 0) { // om null als init-waarde te vermijden
+                    int prev = prevHolder[0];
+                    int diff = current - prev;
+                    downstream.push(diff); // geef het verschil door
+                }
+                prevHolder[0] = current; // update state
+                return true;
+            }
+        );
+    }
+}
+
+public record Statistics(int value, long count, long sum, int min, int max, double avg) {}
+
+public class State {
+    long count = 0;
+    long sum = 0;
+    int min = Integer.MAX_VALUE;
+    int max = Integer.MIN_VALUE;
+
+    public void update(int value) {
+        count++;
+        sum += value;
+        min = Math.min(min, value);
+        max = Math.max(max, value);
+    }
+
+    public Statistics toStatistics(int value) {
+        double avg = (count == 0) ? 0.0 : (double) sum / count;
+        return new Statistics(value, count, sum, min, max, avg);
+    }
+}
+
+import java.util.stream.Gatherer;
+
+public class StatisticsGatherer {
+    public static Gatherer<Integer, ?, Statistics> gatherer() {
+        return Gatherer.ofSequential(
+            State::new,
+            (state, value, downstream) -> {
+                state.update(value);
+                downstream.push(state.toStatistics(value));
+                return true;
+            }
+        );
+    }
+}
+
+import java.util.stream.Stream;
+
+public class StatisticsApp {
+    public static void main(String[] args) {
+        Stream.of(5, 2, 9, 4)
+              .gather(StatisticsGatherer.gatherer())
+              .forEach(System.out::println);
+    }
+}
