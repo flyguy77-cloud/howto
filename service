@@ -1,0 +1,87 @@
+import java.util.*;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+
+public interface SayHelloFactory {
+
+    static List<SayHelloFactory> getInstances() {
+        ServiceLoader<SayHelloFactory> services =
+                ServiceLoader.load(SayHelloFactory.class);
+        return services
+                .stream()
+                .map(ServiceLoader.Provider::get)
+                .collect(Collectors.toList());
+    }
+
+    static Optional<SayHelloFactory> getInstance() {
+        ServiceLoader<SayHelloFactory> services =
+                ServiceLoader.load(SayHelloFactory.class);
+        return services
+                .stream()
+                .map(ServiceLoader.Provider::get)
+                .findFirst();
+    }
+
+    // ✅ Nieuwe methode: met Predicate-filter
+    static Optional<SayHelloFactory> getInstance(Predicate<SayHelloFactory> p) {
+        ServiceLoader<SayHelloFactory> services =
+                ServiceLoader.load(SayHelloFactory.class);
+        return services
+                .stream()
+                .map(ServiceLoader.Provider::get)
+                .filter(p)
+                .findFirst();
+    }
+
+    // ✅ Nieuwe default-methode
+    default boolean willShout() {
+        return false;
+    }
+
+    SayHello getSayHello();
+}
+
+---
+public class ShoutingSayHelloImpl implements SayHello {
+    public void greet() {
+        System.out.println("HELLO MODULE SERVICE WORLD!!!");
+    }
+}
+
+
+---
+
+public class ShoutingSayHelloFactoryImpl implements SayHelloFactory {
+
+    @Override
+    public SayHello getSayHello() {
+        return new ShoutingSayHelloImpl();
+    }
+
+    @Override
+    public boolean willShout() {
+        return true;
+    }
+}
+
+---
+module com.example.sayhello.shouting {
+    requires com.example.sayhello.api;
+    provides SayHelloFactory
+        with ShoutingSayHelloFactoryImpl;
+}
+
+module com.example.sayhello.defaultimpl {
+    requires com.example.sayhello.api;
+    provides SayHelloFactory
+        with SayHelloFactoryImpl;
+}
+
+----
+public class Main {
+    public static void main(String[] args) {
+        SayHelloFactory.getInstance(SayHelloFactory::willShout)
+                .map(SayHelloFactory::getSayHello)
+                .ifPresent(SayHello::greet);
+    }
+}
