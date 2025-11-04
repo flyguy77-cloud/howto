@@ -1,0 +1,199 @@
+Kort antwoord: ja—splitsen. Maak één kleine utility voor status-events (Watcher<Job>) en één voor logstreaming (LogWatch op de bijbehorende Pod/container). Orkestreer ze in een hogere “JobMonitor” die beide start/stop regelt en alles wegschrijft. Zo houd je SRP zuiver, kun je hergebruiken, testen wordt eenvoudiger, en je voorkomt dat log-IO en status-watches elkaar blokkeren.
+
+Hier is een beknopt, production-ready sjabloon dat goed schaalt voor meerdere gelijktijdige jobs.
+
+Architectuur in het kort
+	•	JobStatusWatcher — observeert Job-conditions → normaliseert naar jouw interne JobExecutionStatus en schrijft naar DB.
+	•	PodLogStreamer — zoekt Pod(s) met label job-name=<jobName> → opent LogWatch (optioneel per container) → streamt regels naar DB.
+	•	JobMonitor — start/stop beide componenten als één unit; beheert retries en cleanup (AutoCloseable / try-with-resources).
+	•	Persistence:
+	•	Tabel job_execution (één rij per execution; velden: phase, start/end, reason, message, conditions JSON).
+	•	Tabel job_execution_log (append-only; kolommen: execution_id, ts, container, line_no, text, severity?).
+
+Code-skelet (Fabric8)
+
+public interface JobExecutionRepository {
+    void updateStatus(UUID executionId, JobExecutionStatus status, @Nullable String message, @Nullable Object conditionsJson);
+    void appendLog(UUID executionId, Instant ts, String pod, String container, long lineNo, String text);
+}
+
+public enum JobExecutionStatus { QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED; }
+
+Status watcher (losse utility)
+
+public final class JobStatusWatcher implements AutoCloseable {
+    private final KubernetesClient client;
+    private final String namespace;
+    private final String jobName;
+    private final UUID executionId;
+    private final JobExecutionRepository repo;
+    private Watch watch;
+
+    public JobStatusWatcher(KubernetesClient client, String ns, String jobName, UUID execId, JobExecutionRepository repo) {
+        this.client = client; this.namespace = ns; this.jobName = jobName; this.executionId = execId; this.repo = repo;
+    }
+
+    public void start() {
+        this.watch = client.batch().v1().jobs()
+            .inNamespace(namespace)
+            .withName(jobName)
+            .watch(new Watcher<Job>() {
+                @Override public void eventReceived(Action action, Job job) {
+                    var status = job.getStatus();
+                    if (status == null) return;
+
+                    var conditions = status.getConditions();
+                    var active = Optional.ofNullable(status.getActive()).orElse(0);
+                    var succeeded = Optional.ofNullable(status.getSucceeded()).orElse(0);
+                    var failed = Optional.ofNullable(status.getFailed()).orElse(0);
+
+                    JobExecutionStatus mapped = JobExecutionStatus.RUNNING;
+                    String msg = null;
+
+                    if (succeeded > 0) mapped = JobExecutionStatus.SUCCEEDED;
+                    else if (failed > 0) mapped = JobExecutionStatus.FAILED;
+                    else if (active > 0) mapped = JobExecutionStatus.RUNNING;
+
+                    if (conditions != null && !conditions.isEmpty()) {
+                        var last = conditions.get(conditions.size() - 1);
+                        msg = last.getMessage();
+                        if ("Failed".equalsIgnoreCase(last.getType())) mapped = JobExecutionStatus.FAILED;
+                        if ("Complete".equalsIgnoreCase(last.getType())) mapped = JobExecutionStatus.SUCCEEDED;
+                    }
+
+                    repo.updateStatus(executionId, mapped, msg, conditions);
+                }
+
+                @Override public void onClose(WatcherException cause) {
+                    // Je kunt hier een metrics/timestamp loggen. Herstart laat je de orchestrator doen.
+                }
+            });
+    }
+
+    @Override public void close() {
+        if (watch != null) watch.close();
+    }
+}
+
+Log streamer (losse utility)
+
+public final class PodLogStreamer implements AutoCloseable {
+    private final KubernetesClient client;
+    private final String namespace;
+    private final String podName;
+    private final String container; // optioneel
+    private final UUID executionId;
+    private final JobExecutionRepository repo;
+    private final ExecutorService ioPool;
+
+    private volatile boolean running = false;
+    private Future<?> task;
+
+    public PodLogStreamer(KubernetesClient client, String ns, String podName, String container,
+                          UUID execId, JobExecutionRepository repo, ExecutorService ioPool) {
+        this.client = client; this.namespace = ns; this.podName = podName; this.container = container;
+        this.executionId = execId; this.repo = repo; this.ioPool = ioPool;
+    }
+
+    public void start() {
+        if (running) return;
+        running = true;
+
+        task = ioPool.submit(() -> {
+            PodResource podRes = client.pods().inNamespace(namespace).withName(podName);
+            if (container != null && !container.isBlank()) {
+                podRes = podRes.inContainer(container);
+            }
+
+            try (LogWatch lw = podRes.watchLog();
+                 BufferedReader br = new BufferedReader(new InputStreamReader(lw.getOutput(), StandardCharsets.UTF_8))) {
+                String line; long i = 0;
+                while (running && (line = br.readLine()) != null) {
+                    repo.appendLog(executionId, Instant.now(), podName,
+                            container != null ? container : "", ++i, line);
+                }
+            } catch (IOException e) {
+                // log/metrics; orchestrator kan kiezen om te retryen
+            }
+        });
+    }
+
+    @Override public void close() {
+        running = false;
+        if (task != null) task.cancel(true);
+    }
+}
+
+Orchestrator die beide samenbrengt
+
+public final class JobMonitor implements AutoCloseable {
+    private final JobStatusWatcher statusWatcher;
+    private final PodLogStreamer logStreamer;
+
+    public JobMonitor(JobStatusWatcher statusWatcher, PodLogStreamer logStreamer) {
+        this.statusWatcher = statusWatcher; this.logStreamer = logStreamer;
+    }
+
+    public void start() {
+        statusWatcher.start();
+        logStreamer.start();
+    }
+
+    @Override public void close() {
+        try (statusWatcher; logStreamer) {
+            // try-with-resources sluit netjes af
+        }
+    }
+}
+
+ServiceImpl – hoe je ’m gebruikt (zonder Thread.sleep)
+
+@Service
+@RequiredArgsConstructor
+public class JobExecutionServiceImpl implements JobExecutionService {
+
+    private final KubernetesClient client;
+    private final JobExecutionRepository repo;
+    private final ExecutorService logIoPool = Executors.newCachedThreadPool(); // of bounded
+
+    @Value("${kubernetes.client.namespace}") private String namespace;
+
+    @Override
+    public void executeRunScript(RunScriptRequestDto dto) {
+        UUID execId = UUID.randomUUID();
+        String jobName = dto.getJobName();
+
+        // 1) Job object maken en aanmaken
+        Job job = buildJob(dto); // jouw bestaande builder
+        client.batch().v1().jobs().inNamespace(namespace).resource(job).create();
+
+        // 2) Monitor opzetten
+        try (JobMonitor monitor = new JobMonitor(
+                new JobStatusWatcher(client, namespace, jobName, execId, repo),
+                new PodLogStreamer(client, namespace, jobName, dto.getContainer(), execId, repo, logIoPool)
+        )) {
+            monitor.start();
+
+            // 3) Non-blocking: laat de request thread meteen terugkeren
+            //    Of: als je wilt wachten, gebruik dan waitUntilCondition met een timeout.
+            //    Hier kiezen we asynchroon; je UI kan status/logs later ophalen.
+        }
+        // Belangrijk: de try-with-resources scope hier bepaalt *wanneer* je watchers sluiten.
+        // Kies dus *niet* voor meteen sluiten; verplaats desnoods de monitor naar een registry en sluit bij SUCCEEDED/FAILED.
+    }
+}
+
+Praktische tips en valkuilen
+	•	Levensduur watchers: de bovenstaande try (monitor) sluit direct—in productie wil je de monitor niet meteen sluiten. Bewaar het JobMonitor-object in een in-memory registry (ConcurrentMap executionId -> monitor) en sluit ’m wanneer status SUCCEEDED/FAILED of bij annuleren. Het sjabloon hierboven focust op structuur.
+	•	Herconnectie: bij onClose van de watcher (status) kun je een retry met backoff triggeren (alleen zolang de job nog niet terminal is).
+	•	Meerdere containers: log streamer kan per container worden gestart; vaak wil je alleen de werkende container loggen, niet sidecars.
+	•	Backpressure: als logs hard gaan, buffer niet in geheugen; schrijf batch-gewijs of met async queue + batch insert.
+	•	DB-schema: append-only logs met index op (execution_id, line_no) en eventueel ts is meestal genoeg. Voor status: bewaar raw conditions voor audit.
+	•	Mapping: normaliseer K8s conditions (Active/Succeeded/Failed, type=Complete/Failed) naar jouw NFR-proof interne status.
+	•	Label-selector: gebruik withLabel("job-name", jobName) om pods te vinden; voor reliability kun je ook de ownerReferences van de Job naar Pods volgen.
+
+Maak twee utilities (JobStatusWatcher en PodLogStreamer) en laat een lichte JobMonitor ze managen. Dit geeft je:
+	•	duidelijke scheiding van verantwoordelijkheden,
+	•	betere testbaarheid (mock repo, fake streams),
+	•	goede schaalbaarheid (IO-pool voor logs, event-gestuurd voor status),
+	•	nette resource-afsluiting via AutoCloseable.
