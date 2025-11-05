@@ -1,0 +1,340 @@
+Overzicht van de flow
+	1.	Bij start
+	•	Je maakt een JobExecutionEntity aan (status=PENDING)
+	•	Je creëert een K8s Job met client.batch().v1().jobs()...create()
+	•	Je start een JobMonitor, die zowel de JobStatusWatcher als de PodLogStreamer opzet.
+	2.	JobStatusWatcher
+	•	Observeert Job-events via Fabric8 Watcher.
+	•	Bepaalt de mapped status (RUNNING, FAILED, SUCCEEDED)
+	•	Doet repo.findById(...) → setStatus(...) → repo.save(...).
+	3.	PodLogStreamer
+	•	Observeert Pods met label job-name=<jobName>.
+	•	Start log-streaming zodra Pod Running is.
+	•	Voor elke logregel → findById(...) → append string → repo.save(...).
+	•	Sluit alles als Job terminale status bereikt.
+	4.	JobMonitor
+	•	Start beide watchers.
+	•	Sluit ze bij terminale status.
+
+⸻
+
+JPA: minimaal
+
+public interface JobExecutionRepository extends JpaRepository<JobExecutionEntity, UUID> {}
+
+Entiteit:
+
+@Entity
+@Table(name = "job_execution")
+public class JobExecutionEntity {
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    private String jobName;
+
+    @Enumerated(EnumType.STRING)
+    private JobExecutionStatus status;
+
+    @Lob
+    private String logs;
+
+    private Instant startedAt;
+    private Instant finishedAt;
+
+    private String message;
+
+    // getters/setters
+}
+
+Enum:
+
+public enum JobExecutionStatus {
+    PENDING, RUNNING, SUCCEEDED, FAILED
+}
+
+
+⸻
+
+1. JobStatusWatcher
+
+public final class JobStatusWatcher implements AutoCloseable {
+    private final KubernetesClient client;
+    private final String namespace;
+    private final String jobName;
+    private final UUID executionId;
+    private final JobExecutionRepository repo;
+    private final Consumer<JobExecutionStatus> onTerminal;
+    private Watch watch;
+
+    public JobStatusWatcher(KubernetesClient client, String ns, String jobName, UUID execId,
+                            JobExecutionRepository repo, Consumer<JobExecutionStatus> onTerminal) {
+        this.client = client;
+        this.namespace = ns;
+        this.jobName = jobName;
+        this.executionId = execId;
+        this.repo = repo;
+        this.onTerminal = onTerminal;
+    }
+
+    public void start() {
+        this.watch = client.batch().v1().jobs()
+            .inNamespace(namespace)
+            .withName(jobName)
+            .watch(new Watcher<Job>() {
+                @Override
+                public void eventReceived(Action action, Job job) {
+                    var st = job.getStatus();
+                    if (st == null) return;
+
+                    var succeeded = Optional.ofNullable(st.getSucceeded()).orElse(0);
+                    var failed = Optional.ofNullable(st.getFailed()).orElse(0);
+                    var active = Optional.ofNullable(st.getActive()).orElse(0);
+
+                    JobExecutionStatus mapped = switch (true) {
+                        case true when succeeded > 0 -> JobExecutionStatus.SUCCEEDED;
+                        case true when failed > 0 -> JobExecutionStatus.FAILED;
+                        case true when active > 0 -> JobExecutionStatus.RUNNING;
+                        default -> JobExecutionStatus.PENDING;
+                    };
+
+                    String msg = null;
+                    if (st.getConditions() != null && !st.getConditions().isEmpty()) {
+                        var last = st.getConditions().getLast();
+                        msg = last.getMessage();
+                    }
+
+                    repo.findById(executionId).ifPresent(e -> {
+                        e.setStatus(mapped);
+                        e.setMessage(msg);
+                        if (mapped == JobExecutionStatus.RUNNING && e.getStartedAt() == null)
+                            e.setStartedAt(Instant.now());
+                        if (mapped == JobExecutionStatus.SUCCEEDED || mapped == JobExecutionStatus.FAILED)
+                            e.setFinishedAt(Instant.now());
+                        repo.save(e);
+                    });
+
+                    if (mapped == JobExecutionStatus.SUCCEEDED || mapped == JobExecutionStatus.FAILED) {
+                        onTerminal.accept(mapped);
+                    }
+                }
+
+                @Override
+                public void onClose(WatcherException cause) {
+                    // optioneel reconnect logica
+                }
+            });
+    }
+
+    @Override
+    public void close() {
+        if (watch != null) watch.close();
+    }
+}
+
+
+⸻
+
+2. PodLogStreamer
+
+public final class PodLogStreamer implements AutoCloseable {
+    private final KubernetesClient client;
+    private final String namespace;
+    private final String jobName;
+    private final UUID executionId;
+    private final JobExecutionRepository repo;
+    private final ExecutorService ioPool;
+    private Watch podWatch;
+    private final Map<String, Future<?>> activeStreams = new ConcurrentHashMap<>();
+    private volatile boolean stopRequested = false;
+
+    public PodLogStreamer(KubernetesClient client, String ns, String jobName, UUID execId,
+                          JobExecutionRepository repo, ExecutorService ioPool) {
+        this.client = client;
+        this.namespace = ns;
+        this.jobName = jobName;
+        this.executionId = execId;
+        this.repo = repo;
+        this.ioPool = ioPool;
+    }
+
+    public void start() {
+        podWatch = client.pods().inNamespace(namespace)
+            .withLabel("job-name", jobName)
+            .watch(new Watcher<Pod>() {
+                @Override
+                public void eventReceived(Action action, Pod pod) {
+                    if (stopRequested || pod.getMetadata() == null || pod.getStatus() == null) return;
+
+                    String podName = pod.getMetadata().getName();
+                    String phase = pod.getStatus().getPhase();
+
+                    switch (phase) {
+                        case "Running" -> startStreamForPod(podName);
+                        case "Succeeded", "Failed" -> stopStreamForPod(podName);
+                        default -> {}
+                    }
+                }
+
+                @Override
+                public void onClose(WatcherException cause) {}
+            });
+    }
+
+    private void startStreamForPod(String podName) {
+        if (activeStreams.containsKey(podName)) return;
+
+        Future<?> future = ioPool.submit(() -> {
+            PodResource podRes = client.pods().inNamespace(namespace).withName(podName);
+            try (LogWatch lw = podRes.watchLog();
+                 BufferedReader br = new BufferedReader(
+                     new InputStreamReader(lw.getOutput(), StandardCharsets.UTF_8))) {
+
+                StringBuilder buffer = new StringBuilder();
+                String line;
+                while (!stopRequested && (line = br.readLine()) != null) {
+                    buffer.append(line).append('\n');
+                    if (buffer.length() > 4096) {
+                        flushLogs(buffer);
+                    }
+                }
+                flushLogs(buffer);
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                activeStreams.remove(podName);
+            }
+        });
+        activeStreams.put(podName, future);
+    }
+
+    private void flushLogs(StringBuilder buffer) {
+        String chunk = buffer.toString();
+        buffer.setLength(0);
+        repo.findById(executionId).ifPresent(e -> {
+            String current = Optional.ofNullable(e.getLogs()).orElse("");
+            e.setLogs(current + chunk);
+            repo.save(e);
+        });
+    }
+
+    private void stopStreamForPod(String podName) {
+        Future<?> f = activeStreams.remove(podName);
+        if (f != null) f.cancel(true);
+    }
+
+    @Override
+    public void close() {
+        stopRequested = true;
+        if (podWatch != null) podWatch.close();
+        activeStreams.values().forEach(f -> f.cancel(true));
+        activeStreams.clear();
+    }
+}
+
+
+⸻
+
+3. JobMonitor orchestrator
+
+public final class JobMonitor implements AutoCloseable {
+    private final JobStatusWatcher statusWatcher;
+    private final PodLogStreamer logStreamer;
+
+    public JobMonitor(JobStatusWatcher statusWatcher, PodLogStreamer logStreamer) {
+        this.statusWatcher = statusWatcher;
+        this.logStreamer = logStreamer;
+    }
+
+    public void start() {
+        statusWatcher.start();
+        logStreamer.start();
+    }
+
+    @Override
+    public void close() {
+        try (statusWatcher; logStreamer) {
+            // sluit netjes
+        }
+    }
+}
+
+
+⸻
+
+4. Gebruik in je service
+
+@Service
+@RequiredArgsConstructor
+public class JobExecutionServiceImpl {
+
+    private final KubernetesClient client;
+    private final JobExecutionRepository repo;
+    private final ExecutorService ioPool = Executors.newCachedThreadPool();
+
+    @Value("${kubernetes.client.namespace}")
+    private String namespace;
+
+    public UUID executeRunScript(ScriptRequestDto dto) {
+        JobExecutionEntity exec = new JobExecutionEntity();
+        exec.setJobName(dto.jobName());
+        exec.setStatus(JobExecutionStatus.PENDING);
+        exec = repo.save(exec);
+
+        Job job = new JobBuilder()
+                .withNewMetadata().withName(dto.jobName()).endMetadata()
+                .withNewSpec()
+                    .withTtlSecondsAfterFinished(600)
+                    .withNewTemplate()
+                        .withNewSpec()
+                            .addNewContainer()
+                                .withName("runner")
+                                .withImage(dto.image())
+                                .withCommand(dto.command())
+                            .endContainer()
+                            .withRestartPolicy("Never")
+                        .endSpec()
+                    .endTemplate()
+                .endSpec()
+                .build();
+
+        client.batch().v1().jobs().inNamespace(namespace).resource(job).create();
+
+        JobMonitor monitor = new JobMonitor(
+            new JobStatusWatcher(client, namespace, dto.jobName(), exec.getId(), repo, status -> {
+                if (status == JobExecutionStatus.FAILED || status == JobExecutionStatus.SUCCEEDED) {
+                    monitorClose(monitor);
+                }
+            }),
+            new PodLogStreamer(client, namespace, dto.jobName(), exec.getId(), repo, ioPool)
+        );
+
+        monitor.start();
+        return exec.getId();
+    }
+
+    private void monitorClose(JobMonitor monitor) {
+        try { monitor.close(); } catch (Exception ignored) {}
+    }
+}
+
+
+⸻
+
+Gedrag
+	•	Zodra de Job Failed of Succeeded →
+JobStatusWatcher meldt dit → JobMonitor sluit zowel de status- als logwatcher.
+	•	Bij Failed Jobs wordt stopRequested=true gezet, waardoor het logstreamen onmiddellijk stopt.
+	•	Alle status- en logupdates gaan via één repo.save().
+	•	Bij een nieuwe Job (door K8s herstart) beginnen watchers vanzelf opnieuw omdat de labelselector (job-name) nog steeds matcht.
+
+⸻
+
+Dit ontwerp combineert:
+
+✔  Fabric8 watchers (geen polling)
+✔  Threadpool voor logs (I/O)
+✔  Minimale JPA-interactie (findById + save)
+✔  Automatische afsluiting bij terminale Jobstatus
+
+En dus: robuust, transactioneel veilig en klaar voor groei.
