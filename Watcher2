@@ -329,7 +329,29 @@ JobStatusWatcher meldt dit → JobMonitor sluit zowel de status- als logwatcher.
 	•	Bij een nieuwe Job (door K8s herstart) beginnen watchers vanzelf opnieuw omdat de labelselector (job-name) nog steeds matcht.
 
 ⸻
+@Service
+@RequiredArgsConstructor
+public class JobPersistenceHelper {
+    private final JobExecutionRepository repo;
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void updateStatus(UUID id, JobExecutionStatus status, String message) {
+        repo.findById(id).ifPresent(e -> {
+            e.setStatus(status);
+            e.setMessage(message);
+            repo.save(e);
+        });
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void appendLogs(UUID id, String chunk) {
+        repo.findById(id).ifPresent(e -> {
+            String existing = Optional.ofNullable(e.getLogs()).orElse("");
+            e.setLogs(existing + chunk);
+            repo.save(e);
+        });
+    }
+}
 Dit ontwerp combineert:
 
 ✔  Fabric8 watchers (geen polling)
