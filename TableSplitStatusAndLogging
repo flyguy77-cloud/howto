@@ -1,0 +1,200 @@
+Een gescheiden database model voor de tabellen status en logging
+Watchers in combinatie met Java concurrency thread pools
+
+Statussen veranderen per row maximaal 5x
+Logging kan 100+ regels bevatten die constant worden geupdated in de tabel
+
+Watchers binnen fabric8 draaien volledig buiten Spring en hebben een eigen callback thread pool
+
+Java concurrency threads loop ook buiten Spring om, maar door de Hibernate -> JDBC -> database locking en versioning probleem waarbij watchers schrijven 
+tegelijkertijd naar dezelfde row in de tabel, dit geeft locking problemen waardoor een van de schrijfacties gewoonweg niet doorkomen (deadlock) zonder te 
+rommelen met versioning en transaction tweaks 
+is de beste oplossing een scheiding van de tabellen met een one to many relatie
+
+-----
+Oplossing seperation of tables:
+
+➡️ twee aparte JPA-entiteiten,
+➡️ twee aparte repositories,
+➡️ en twee services die elk hun eigen verantwoordelijkheid en transactiegrenzen hebben.
+
+⸻
+
+🔧 Principes in deze herziening
+	1.	Geen @Transactional meer op service-methods – we laten Spring’s repository zelf voor korte JDBC-sessies zorgen.
+	2.	Volledig append-only logging – geen locking, geen rollback nodig.
+	3.	Kleine en duidelijke services – puur bedoeld als facade naar de repositories.
+	4.	Watchers gebruiken Fabric8’s eigen threads – ze roepen enkel Spring-beans aan, zonder dat Spring transacties probeert te beheren.
+
+⸻
+
+1. Entiteiten
+
+JobExecutionEntity
+
+@Entity
+@Table(name = "job_execution")
+public class JobExecutionEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    private String jobName;
+
+    @Enumerated(EnumType.STRING)
+    private JobExecutionStatus status;
+
+    private String message;
+
+    private Instant startedAt;
+    private Instant finishedAt;
+}
+
+JobExecutionLogEntity
+
+@Entity
+@Table(name = "job_execution_log")
+public class JobExecutionLogEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "job_execution_id", nullable = false)
+    private JobExecutionEntity jobExecution;
+
+    private Instant timestamp;
+
+    @Column(length = 4000)
+    private String message;
+}
+
+
+⸻
+
+2. Repositories
+
+public interface JobExecutionRepository extends JpaRepository<JobExecutionEntity, UUID> {}
+
+public interface JobExecutionLogRepository extends JpaRepository<JobExecutionLogEntity, Long> {}
+
+Beide doen hun werk zelfstandig; elke repository-methode opent en sluit z’n eigen entity-manager-sessie via Spring Data.
+
+⸻
+
+3. Services (zonder @Transactional)
+
+@Service
+@RequiredArgsConstructor
+public class JobStatusService {
+
+    private final JobExecutionRepository repo;
+
+    public void updateStatus(UUID execId, JobExecutionStatus status, String message) {
+        repo.findById(execId).ifPresent(e -> {
+            e.setStatus(status);
+            e.setMessage(message);
+            if (status == JobExecutionStatus.RUNNING && e.getStartedAt() == null)
+                e.setStartedAt(Instant.now());
+            if (status == JobExecutionStatus.SUCCEEDED || status == JobExecutionStatus.FAILED)
+                e.setFinishedAt(Instant.now());
+            repo.save(e);
+        });
+    }
+}
+
+@Service
+@RequiredArgsConstructor
+public class JobLogService {
+
+    private final JobExecutionRepository jobRepo;
+    private final JobExecutionLogRepository logRepo;
+
+    public void appendLog(UUID execId, String line) {
+        jobRepo.findById(execId).ifPresent(job -> {
+            JobExecutionLogEntity log = new JobExecutionLogEntity();
+            log.setJobExecution(job);
+            log.setTimestamp(Instant.now());
+            log.setMessage(line);
+            logRepo.save(log);
+        });
+    }
+}
+
+Spring Data opent hier onder water een eigen korte transactie per save() —
+precies genoeg om één write af te handelen, maar zonder langdurige sessies of proxy-overhead.
+
+⸻
+
+4. Watchers
+
+JobStatusWatcher
+
+public final class JobStatusWatcher implements AutoCloseable {
+    private final JobStatusService statusService;
+    private final UUID executionId;
+
+    public void eventReceived(Action action, Job job) {
+        JobExecutionStatus mapped = mapStatus(job);
+        String msg = extractMessage(job);
+        statusService.updateStatus(executionId, mapped, msg);
+    }
+
+    private JobExecutionStatus mapStatus(Job job) { /* ... */ }
+    private String extractMessage(Job job) { /* ... */ }
+
+    @Override public void close() { /* eventueel watcher sluiten */ }
+}
+
+PodLogStreamer
+
+public final class PodLogStreamer implements AutoCloseable {
+    private final KubernetesClient client;
+    private final String namespace;
+    private final String jobName;
+    private final UUID executionId;
+    private final JobLogService logService;
+
+    public void start() {
+        try (LogWatch lw = client.pods()
+                .inNamespace(namespace)
+                .withLabel("job-name", jobName)
+                .watchLog();
+             BufferedReader br = new BufferedReader(
+                     new InputStreamReader(lw.getOutput(), StandardCharsets.UTF_8))) {
+
+            String line;
+            while ((line = br.readLine()) != null) {
+                logService.appendLog(executionId, line);
+            }
+        } catch (IOException e) {
+            // logging of metrics
+        }
+    }
+
+    @Override public void close() { /* niets speciaals nodig */ }
+}
+
+
+⸻
+
+Waarom dit eenvoudiger én correct is
+
+Punt	Uitleg
+Geen @Transactional	Elke repository-methode opent z’n eigen korte commit; watchers draaien buiten Spring’s transaction-proxy.
+Geen ExecutorService meer	Fabric8 regelt zijn eigen threads voor watchers en logstreams.
+Geen locks	Logs zijn insert-only, status wordt zelden geüpdatet.
+Lagere overhead	Geen Spring-proxy per call, geen transaction management.
+Thread-veilig	Elke DB-operatie is atomair; PostgreSQL handelt isolatie af.
+
+
+⸻
+
+Samenvatting
+	•	Watchers (Fabric8) → draaien in eigen event-threads.
+	•	Services (JobStatusService, JobLogService) → simpele façade naar repositories.
+	•	Geen @Transactional nodig: Spring Data commit elke save() zelf.
+	•	Geen ExecutorService meer: Fabric8 levert al non-blocking log- en jobevents.
+	•	Database-model opgesplitst → geen locking of stale entities.
