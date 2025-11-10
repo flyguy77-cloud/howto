@@ -14,13 +14,13 @@ is de beste oplossing een scheiding van de tabellen met een one to many relatie
 -----
 Oplossing seperation of tables:
 
-➡️ twee aparte JPA-entiteiten,
-➡️ twee aparte repositories,
-➡️ en twee services die elk hun eigen verantwoordelijkheid en transactiegrenzen hebben.
+twee aparte JPA-entiteiten,
+twee aparte repositories,
+en twee services die elk hun eigen verantwoordelijkheid en transactiegrenzen hebben.
 
 ⸻
 
-🔧 Principes in deze herziening
+Principes in deze herziening
 	1.	Geen @Transactional meer op service-methods – we laten Spring’s repository zelf voor korte JDBC-sessies zorgen.
 	2.	Volledig append-only logging – geen locking, geen rollback nodig.
 	3.	Kleine en duidelijke services – puur bedoeld als facade naar de repositories.
