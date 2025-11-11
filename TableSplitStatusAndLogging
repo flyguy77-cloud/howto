@@ -28,6 +28,23 @@ Principes in deze herziening
 
 ⸻
 
+CREATE TABLE job_execution (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_name VARCHAR(255) NOT NULL,
+	job_type VARCHAR(50) NOT NULL DEFAULT 'SCRIPT'
+    status VARCHAR(50),
+    message TEXT,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ
+);
+
+CREATE TABLE job_execution_log (
+    id BIGSERIAL PRIMARY KEY,
+    job_execution_id UUID NOT NULL REFERENCES job_execution(id) ON DELETE CASCADE,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+    message TEXT NOT NULL
+);
+
 1. Entiteiten
 
 JobExecutionEntity
@@ -41,6 +58,9 @@ public class JobExecutionEntity {
     private UUID id;
 
     private String jobName;
+
+    @Enumerated(EnumType.STRING)
+    private JobExecutionType jobType;
 
     @Enumerated(EnumType.STRING)
     private JobExecutionStatus status;
