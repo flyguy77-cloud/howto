@@ -1,6 +1,4 @@
-1. Datamodel (JPA)
-
-We houden de gesplitste structuur met job_type aan.
+1. Datamodel
 
 @Entity
 @Table(name = "job_execution")
@@ -109,24 +107,24 @@ public class JobExecutionServiceImpl implements JobExecutionService {
 
     private final KubernetesClient client;
     private final JobExecutionRepository jobRepo;
-    private final JobExecutionLogRepository logRepo;
-    private final JobStatusService statusService;
-    private final JobLogService logService;
+    private final JobMonitor jobMonitor;
 
     @Value("${kubernetes.client.namespace}")
     private String namespace;
 
     @Override
     public JobStatusResponseDto execute(ExecuteJobRequestDto request) {
-        JobExecutionEntity job = new JobExecutionEntity();
+        // Maak record in DB
+        var job = new JobExecutionEntity();
         job.setJobName(request.jobName());
         job.setJobType(JobExecutionType.SCRIPT);
         job.setStatus(JobExecutionStatus.PENDING);
         job.setStartedAt(Instant.now());
         jobRepo.save(job);
 
-        // Bouw en start de Kubernetes Job
         String jobName = "job-" + job.getId();
+
+        // Bouw & start Kubernetes Job
         var k8sJob = new JobBuilder()
             .withNewMetadata().withName(jobName).endMetadata()
             .withNewSpec()
@@ -145,43 +143,40 @@ public class JobExecutionServiceImpl implements JobExecutionService {
 
         client.batch().v1().jobs().inNamespace(namespace).create(k8sJob);
 
-        // Start watchers
-        var statusWatcher = new JobStatusWatcher(client, namespace, jobName, job.getId(), statusService);
-        var logStreamer = new PodLogStreamer(client, namespace, jobName, job.getId(), logService);
-        var monitor = new JobMonitor(statusWatcher, logStreamer);
-        monitor.start();
+        // Start watchers via monitor (asynchroon door Fabric8)
+        jobMonitor.monitor(namespace, jobName, job.getId());
 
-        return mapToDto(job);
+        return new JobStatusResponseDto(
+            job.getId(),
+            job.getJobName(),
+            job.getJobType(),
+            job.getStatus(),
+            job.getMessage(),
+            job.getStartedAt(),
+            job.getFinishedAt()
+        );
     }
 
     @Override
     public JobStatusResponseDto getStatus(UUID jobId) {
         return jobRepo.findById(jobId)
-                .map(this::mapToDto)
+                .map(j -> new JobStatusResponseDto(
+                        j.getId(), j.getJobName(), j.getJobType(),
+                        j.getStatus(), j.getMessage(),
+                        j.getStartedAt(), j.getFinishedAt()))
                 .orElseThrow(() -> new EntityNotFoundException("Job not found"));
     }
 
     @Override
     public List<JobLogResponseDto> getLogs(UUID jobId) {
-        return logRepo.findByJobExecutionIdOrderByTimestampAsc(jobId)
-                .stream()
-                .map(l -> new JobLogResponseDto(l.getTimestamp(), l.getMessage()))
-                .toList();
-    }
-
-    private JobStatusResponseDto mapToDto(JobExecutionEntity e) {
-        return new JobStatusResponseDto(
-            e.getId(),
-            e.getJobName(),
-            e.getJobType(),
-            e.getStatus(),
-            e.getMessage(),
-            e.getStartedAt(),
-            e.getFinishedAt()
-        );
+        // eenvoudig append-only ophalen
+        return jobRepo.findById(jobId)
+                .map(j -> j.getLogs().stream()
+                    .map(l -> new JobLogResponseDto(l.getTimestamp(), l.getMessage()))
+                    .toList())
+                .orElse(List.of());
     }
 }
-
 
 ⸻
 
@@ -214,208 +209,171 @@ public class JobExecutionController {
 ⸻
 1. JobStatusWatcher
 
-public final class JobStatusWatcher implements AutoCloseable {
+@Component
+@RequiredArgsConstructor
+public class JobStatusWatcher {
 
     private final KubernetesClient client;
-    private final String namespace;
-    private final String jobName;
-    private final UUID executionId;
     private final JobStatusService statusService;
-    private Watch watch;
 
-    public JobStatusWatcher(KubernetesClient client,
-                            String namespace,
-                            String jobName,
-                            UUID executionId,
-                            JobStatusService statusService) {
-        this.client = client;
-        this.namespace = namespace;
-        this.jobName = jobName;
-        this.executionId = executionId;
-        this.statusService = statusService;
-    }
-
-    public void start() {
-        this.watch = client.batch().v1().jobs()
+    public Watch start(String namespace, String jobName, UUID execId) {
+        return client.batch().v1().jobs()
             .inNamespace(namespace)
             .withName(jobName)
             .watch(new Watcher<Job>() {
                 @Override
                 public void eventReceived(Action action, Job job) {
-                    if (job.getStatus() == null) return;
+                    if (job == null || job.getStatus() == null) return;
 
-                    var status = job.getStatus();
-                    var conditions = status.getConditions();
-
-                    JobExecutionStatus mapped = JobExecutionStatus.RUNNING;
+                    var jobStatus = job.getStatus();
+                    var conditions = jobStatus.getConditions();
+                    var mapped = JobExecutionStatus.RUNNING;
                     String msg = null;
 
-                    if (status.getSucceeded() != null && status.getSucceeded() > 0)
+                    if (jobStatus.getSucceeded() != null && jobStatus.getSucceeded() > 0)
                         mapped = JobExecutionStatus.SUCCEEDED;
-                    else if (status.getFailed() != null && status.getFailed() > 0)
+                    else if (jobStatus.getFailed() != null && jobStatus.getFailed() > 0)
                         mapped = JobExecutionStatus.FAILED;
 
                     if (conditions != null && !conditions.isEmpty()) {
                         var last = conditions.get(conditions.size() - 1);
                         msg = last.getMessage();
                         switch (last.getType()) {
-                            case "Complete" -> mapped = JobExecutionStatus.SUCCEEDED;
                             case "Failed" -> mapped = JobExecutionStatus.FAILED;
+                            case "Complete" -> mapped = JobExecutionStatus.SUCCEEDED;
                         }
                     }
 
-                    statusService.updateStatus(executionId, mapped, msg);
+                    statusService.updateStatus(execId, mapped, msg);
                 }
 
                 @Override
                 public void onClose(WatcherException cause) {
                     if (cause != null) {
-                        statusService.updateStatus(executionId, JobExecutionStatus.FAILED,
+                        statusService.updateStatus(execId, JobExecutionStatus.FAILED,
                                 "Watcher closed: " + cause.getMessage());
                     }
                 }
             });
-    }
-
-    @Override
-    public void close() {
-        if (watch != null) watch.close();
     }
 }
 
 ⸻
 2. PodLogStreamer
 
-public final class PodLogStreamer implements AutoCloseable {
+@Component
+@RequiredArgsConstructor
+public class PodLogStreamer {
 
     private final KubernetesClient client;
-    private final String namespace;
-    private final String jobName;
-    private final UUID executionId;
     private final JobLogService logService;
-    private volatile boolean running = false;
 
-    public PodLogStreamer(KubernetesClient client,
-                          String namespace,
-                          String jobName,
-                          UUID executionId,
-                          JobLogService logService) {
-        this.client = client;
-        this.namespace = namespace;
-        this.jobName = jobName;
-        this.executionId = executionId;
-        this.logService = logService;
-    }
-
-    public void start() {
-        running = true;
-        // vind de pod met label "job-name"
+    public void start(String namespace, String jobName, UUID execId) {
         var pods = client.pods()
                 .inNamespace(namespace)
                 .withLabel("job-name", jobName)
                 .list()
                 .getItems();
 
-        if (pods == null || pods.isEmpty()) return;
+        if (pods == null || pods.isEmpty()) {
+            logService.appendLog(execId, "[WARN] No pods found for job " + jobName);
+            return;
+        }
 
-        String podName = pods.get(0).getMetadata().getName();
+        var podName = pods.get(0).getMetadata().getName();
 
-        // Start de logstream
-        try (LogWatch logWatch = client.pods()
+        try (LogWatch lw = client.pods()
                 .inNamespace(namespace)
                 .withName(podName)
                 .watchLog();
-             BufferedReader reader = new BufferedReader(
-                     new InputStreamReader(logWatch.getOutput(), StandardCharsets.UTF_8))) {
+             BufferedReader br = new BufferedReader(
+                     new InputStreamReader(lw.getOutput(), StandardCharsets.UTF_8))) {
 
             String line;
-            while (running && (line = reader.readLine()) != null) {
-                logService.appendLog(executionId, line);
+            while ((line = br.readLine()) != null) {
+                logService.appendLog(execId, line);
             }
 
         } catch (IOException e) {
-            logService.appendLog(executionId, "[ERROR] Log stream error: " + e.getMessage());
+            logService.appendLog(execId, "[ERROR] Log streaming failed: " + e.getMessage());
         }
-    }
-
-    @Override
-    public void close() {
-        running = false;
     }
 }
 
 ⸻
 3. JobMonitor
-
-public final class JobMonitor implements AutoCloseable {
+// coordinator zonder java threads
+@Component
+@RequiredArgsConstructor
+public class JobMonitor {
 
     private final JobStatusWatcher statusWatcher;
     private final PodLogStreamer logStreamer;
-    private final ExecutorService executor = Executors.newCachedThreadPool();
 
-    public JobMonitor(JobStatusWatcher statusWatcher, PodLogStreamer logStreamer) {
-        this.statusWatcher = statusWatcher;
-        this.logStreamer = logStreamer;
-    }
-
-    public void start() {
-        // Start beide watchers asynchroon
-        executor.submit(statusWatcher::start);
-        executor.submit(logStreamer::start);
-    }
-
-    @Override
-    public void close() {
-        try (statusWatcher; logStreamer) {
-            executor.shutdownNow();
+    public void monitor(String namespace, String jobName, UUID execId) {
+        try (Watch watch = statusWatcher.start(namespace, jobName, execId)) {
+            logStreamer.start(namespace, jobName, execId);
+        } catch (Exception e) {
+            // log error, maar watchers worden netjes gesloten
         }
     }
 }
 
 ⸻
-4. Integratie in JobExecutionServiceImpl
 
-@Override
-public JobStatusResponseDto execute(ExecuteJobRequestDto request) {
-    
-//Job aanmaken in DB
-    JobExecutionEntity job = new JobExecutionEntity();
-    job.setJobName(request.jobName());
-    job.setJobType(JobExecutionType.SCRIPT);
-    job.setStatus(JobExecutionStatus.PENDING);
-    job.setStartedAt(Instant.now());
-    jobRepo.save(job);
 
-    String k8sJobName = "job-" + job.getId();
-
-    // Bouw Kubernetes Job
-    var k8sJob = new JobBuilder()
-        .withNewMetadata().withName(k8sJobName).endMetadata()
-        .withNewSpec()
-            .withNewTemplate()
-                .withNewSpec()
-                    .addNewContainer()
-                        .withName("runner")
-                        .withImage("python:3.11")
-                        .withCommand("bash", "-c", request.scriptContent())
-                    .endContainer()
-                    .withRestartPolicy("Never")
-                .endSpec()
-            .endTemplate()
-        .endSpec()
-        .build();
-
-    client.batch().v1().jobs().inNamespace(namespace).create(k8sJob);
-
-    // Start watchers
-    JobStatusWatcher statusWatcher = new JobStatusWatcher(
-            client, namespace, k8sJobName, job.getId(), statusService);
-
-    PodLogStreamer logStreamer = new PodLogStreamer(
-            client, namespace, k8sJobName, job.getId(), logService);
-
-    JobMonitor monitor = new JobMonitor(statusWatcher, logStreamer);
-    monitor.start();
-
-    return mapToDto(job);
-}
+src/
+ └── main/
+      ├── java/
+      │    └── net/test/workflow/
+      │         ├── controller/
+      │         │    └── JobExecutionController.java
+      │         │
+      │         ├── dto/
+      │         │    ├── request/
+      │         │    │    └── ExecuteJobRequestDto.java
+      │         │    └── response/
+      │         │         ├── JobStatusResponseDto.java
+      │         │         └── JobLogResponseDto.java
+      │         │
+      │         ├── entity/
+      │         │    ├── JobExecutionEntity.java
+      │         │    └── JobExecutionLogEntity.java
+      │         │
+      │         ├── enums/
+      │         │    ├── JobExecutionStatus.java
+      │         │    └── JobExecutionType.java
+      │         │
+      │         ├── repository/
+      │         │    ├── JobExecutionRepository.java
+      │         │    └── JobExecutionLogRepository.java
+      │         │
+      │         ├── service/
+      │         │    ├── JobExecutionService.java
+      │         │    ├── JobExecutionServiceImpl.java
+      │         │    ├── JobStatusService.java
+      │         │    ├── JobLogService.java
+      │         │    └── impl/
+      │         │         ├── JobStatusServiceImpl.java
+      │         │         └── JobLogServiceImpl.java
+      │         │
+      │         ├── kubernetes/
+      │         │    ├── watcher/
+      │         │    │    ├── JobStatusWatcher.java
+      │         │    │    └── PodLogStreamer.java
+      │         │    └── monitor/
+      │         │         └── JobMonitor.java
+      │         │
+      │         ├── config/
+      │         │    ├── GitLabConfig.java
+      │         │    └── KubernetesConfig.java
+      │         │
+      │         └── util/
+      │              └── JobMapper.java
+      │
+      └── resources/
+           ├── application.yml
+           └── db/migration/
+                ├── V10__create_job_execution_tables.sql
+                ├── V11__add_job_type_column.sql
+                └── V12__seed_data.sql (optioneel)
