@@ -152,63 +152,130 @@ precies genoeg om één write af te handelen, maar zonder langdurige sessies of 
 
 JobStatusWatcher
 
+@Component
+@RequiredArgsConstructor
 public final class JobStatusWatcher implements AutoCloseable {
-    private final JobStatusService statusService;
-    private final UUID executionId;
 
-    public void eventReceived(Action action, Job job) {
-        JobExecutionStatus mapped = mapStatus(job);
-        String msg = extractMessage(job);
-        statusService.updateStatus(executionId, mapped, msg);
+    private final JobStatusService statusService;
+
+    private Watch watch;
+
+    public Watch start(String namespace, String jobName, UUID execId, KubernetesClient client) {
+        this.watch = client.batch().v1().jobs()
+                .inNamespace(namespace)
+                .withName(jobName)
+                .watch(new Watcher<Job>() {
+
+                    @Override
+                    public void eventReceived(Action action, Job job) {
+                        if (job == null || job.getStatus() == null) return;
+
+                        JobExecutionStatus mapped = mapStatus(job);
+                        String message = extractMessage(job);
+
+                        statusService.updateStatus(execId, mapped, message);
+                    }
+
+                    @Override
+                    public void onClose(WatcherException cause) {
+                        if (cause != null) {
+                            statusService.updateStatus(execId,
+                                    JobExecutionStatus.FAILED,
+                                    "Watcher closed: " + cause.getMessage());
+                        }
+                    }
+                });
+
+        return this.watch;
     }
 
-    private JobExecutionStatus mapStatus(Job job) { /* ... */ }
-    private String extractMessage(Job job) { /* ... */ }
+    private JobExecutionStatus mapStatus(Job job) {
+        var st = job.getStatus();
 
-    @Override public void close() { /* eventueel watcher sluiten */ }
+        if (st.getSucceeded() != null && st.getSucceeded() > 0)
+            return JobExecutionStatus.SUCCEEDED;
+
+        if (st.getFailed() != null && st.getFailed() > 0)
+            return JobExecutionStatus.FAILED;
+
+        if (st.getActive() != null && st.getActive() > 0)
+            return JobExecutionStatus.RUNNING;
+
+        return JobExecutionStatus.RUNNING; // default fallback
+    }
+
+    private String extractMessage(Job job) {
+        var st = job.getStatus();
+        if (st.getConditions() == null || st.getConditions().isEmpty())
+            return null;
+
+        var last = st.getConditions().get(st.getConditions().size() - 1);
+        return last.getMessage();
+    }
+
+    @Override
+    public void close() {
+        if (watch != null) {
+            watch.close();
+        }
+    }
 }
 
 PodLogStreamer
 
+@Component
+@RequiredArgsConstructor
 public final class PodLogStreamer implements AutoCloseable {
+
     private final KubernetesClient client;
-    private final String namespace;
-    private final String jobName;
-    private final UUID executionId;
     private final JobLogService logService;
 
-    public void start() {
-        try (LogWatch lw = client.pods()
+    private volatile boolean running = false;
+
+    public void start(String namespace, String jobName, UUID execId) {
+
+        running = true;
+
+        // Vind de pod die bij de Job hoort
+        var pods = client.pods()
                 .inNamespace(namespace)
                 .withLabel("job-name", jobName)
+                .list()
+                .getItems();
+
+        if (pods == null || pods.isEmpty()) {
+            logService.appendLog(execId,
+                    "[WARN] No pods found for job: " + jobName);
+            return;
+        }
+
+        String podName = pods.get(0).getMetadata().getName();
+
+        // Start de logstream van de pod
+        try (LogWatch lw = client.pods()
+                .inNamespace(namespace)
+                .withName(podName)
                 .watchLog();
              BufferedReader br = new BufferedReader(
                      new InputStreamReader(lw.getOutput(), StandardCharsets.UTF_8))) {
 
             String line;
-            while ((line = br.readLine()) != null) {
-                logService.appendLog(executionId, line);
+            while (running && (line = br.readLine()) != null) {
+                logService.appendLog(execId, line);
             }
+
         } catch (IOException e) {
-            // logging of metrics
+            logService.appendLog(execId,
+                    "[ERROR] Log streamer crashed: " + e.getMessage());
         }
     }
 
-    @Override public void close() { /* niets speciaals nodig */ }
+    @Override
+    public void close() {
+        running = false;
+        // LogWatch wordt automatisch gesloten via try-with-resources
+    }
 }
-
-
-⸻
-
-Waarom dit eenvoudiger én correct is
-
-Punt	Uitleg
-Geen @Transactional	Elke repository-methode opent z’n eigen korte commit; watchers draaien buiten Spring’s transaction-proxy.
-Geen ExecutorService meer	Fabric8 regelt zijn eigen threads voor watchers en logstreams.
-Geen locks	Logs zijn insert-only, status wordt zelden geüpdatet.
-Lagere overhead	Geen Spring-proxy per call, geen transaction management.
-Thread-veilig	Elke DB-operatie is atomair; PostgreSQL handelt isolatie af.
-
 
 ⸻
 
