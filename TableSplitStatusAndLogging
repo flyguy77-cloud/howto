@@ -285,3 +285,152 @@ Samenvatting
 	•	Geen @Transactional nodig: Spring Data commit elke save() zelf.
 	•	Geen ExecutorService meer: Fabric8 levert al non-blocking log- en jobevents.
 	•	Database-model opgesplitst → geen locking of stale entities.
+
+
+@Component
+@RequiredArgsConstructor
+public final class JobStatusWatcher implements AutoCloseable {
+
+    private final KubernetesClient client;
+    private final JobStatusService statusService;
+
+    private volatile boolean running = false;
+    private Watch watch;
+
+    public void start(String namespace, String jobName, UUID execId) {
+
+        running = true;
+
+        this.watch = client.batch().v1().jobs()
+                .inNamespace(namespace)
+                .withName(jobName)
+                .watch(new Watcher<Job>() {
+
+                    @Override
+                    public void eventReceived(Action action, Job job) {
+                        if (!running) return;
+                        if (job == null || job.getStatus() == null) return;
+
+                        JobExecutionStatus mapped = mapStatus(job);
+                        String message = extractMessage(job);
+
+                        statusService.updateStatus(execId, mapped, message);
+                    }
+
+                    @Override
+                    public void onClose(WatcherException cause) {
+                        if (cause != null) {
+                            statusService.updateStatus(
+                                    execId,
+                                    JobExecutionStatus.FAILED,
+                                    "Status watcher closed: " + cause.getMessage()
+                            );
+                        }
+                    }
+                });
+    }
+
+    private JobExecutionStatus mapStatus(Job job) {
+        var st = job.getStatus();
+
+        if (st.getSucceeded() != null && st.getSucceeded() > 0)
+            return JobExecutionStatus.SUCCEEDED;
+
+        if (st.getFailed() != null && st.getFailed() > 0)
+            return JobExecutionStatus.FAILED;
+
+        if (st.getActive() != null && st.getActive() > 0)
+            return JobExecutionStatus.RUNNING;
+
+        return JobExecutionStatus.RUNNING;
+    }
+
+    private String extractMessage(Job job) {
+        var st = job.getStatus();
+        if (st.getConditions() == null || st.getConditions().isEmpty())
+            return null;
+
+        var last = st.getConditions().get(st.getConditions().size() - 1);
+        return last.getMessage();
+    }
+
+    @Override
+    public void close() {
+        running = false;
+        if (watch != null) {
+            try {
+                watch.close();
+            } catch (Exception ignored) {}
+        }
+    }
+}
+
+
+@Component
+@RequiredArgsConstructor
+public final class PodLogStreamer implements AutoCloseable {
+
+    private final KubernetesClient client;
+    private final JobLogService logService;
+    private volatile boolean running = false;
+
+    private LogWatch logWatch; // <-- wordt nu beheerd als resource
+
+    public void start(String namespace, String jobName, UUID execId) {
+
+        running = true;
+
+        // 1️⃣ vind bijbehorende pod
+        var pods = client.pods()
+                .inNamespace(namespace)
+                .withLabel("job-name", jobName)
+                .list()
+                .getItems();
+
+        if (pods == null || pods.isEmpty()) {
+            logService.appendLog(execId, "[WARN] No pods found for job: " + jobName);
+            return;
+        }
+
+        String podName = pods.get(0).getMetadata().getName();
+
+        // 2️⃣ open logwatch (Fabric8 maakt zelf een I/O thread aan)
+        this.logWatch = client.pods()
+                .inNamespace(namespace)
+                .withName(podName)
+                .watchLog(new LogListener() {
+
+                    @Override
+                    public void onOpen() {
+                        logService.appendLog(execId, "[INFO] Log stream opened for pod " + podName);
+                    }
+
+                    @Override
+                    public void onMessage(String line) {
+                        if (running && line != null) {
+                            logService.appendLog(execId, line);
+                        }
+                    }
+
+                    @Override
+                    public void onClose() {
+                        logService.appendLog(execId, "[INFO] Log stream closed for pod " + podName);
+                    }
+
+                    @Override
+                    public void onException(Exception e) {
+                        logService.appendLog(execId, "[ERROR] Log stream error: " + e.getMessage());
+                    }
+                });
+    }
+
+    @Override
+    public void close() {
+        running = false;
+        if (logWatch != null) {
+            try {
+                logWatch.close();
+            } catch (Exception ignored) {}
+        }
+    }
+}
