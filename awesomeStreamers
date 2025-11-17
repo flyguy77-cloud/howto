@@ -1,0 +1,243 @@
+@Component
+@RequiredArgsConstructor
+public final class JobMonitor implements AutoCloseable {
+
+    private final JobStatusStreamer statusStreamer;
+    private final PodLogStreamer logStreamer;
+
+    private Watch statusWatch;
+    private LogWatch logWatch;
+
+    public void start(String namespace, String jobName, UUID execId) {
+        statusStreamer.start(namespace, jobName, execId);
+        logStreamer.start(namespace, jobName, execId);
+    }
+
+    @Override
+    public void close() {
+        try {
+            statusStreamer.close();
+            logStreamer.close();
+        } catch (Exception ignored) {}
+    }
+}
+
+-------------
+
+@Service
+@RequiredArgsConstructor
+public class JobStatusService {
+
+    private final JobExecutionRepository repo;
+
+    public void updateStatus(UUID execId, JobExecutionStatus newStatus, String message) {
+
+        repo.findById(execId).ifPresent(entity -> {
+
+            // status & message
+            entity.setStatus(newStatus);
+            if (message != null) entity.setMessage(message);
+
+            // start time
+            if (newStatus == JobExecutionStatus.RUNNING && entity.getStartedAt() == null) {
+                entity.setStartedAt(Instant.now());
+            }
+
+            // end time
+            if (newStatus == JobExecutionStatus.SUCCEEDED ||
+                newStatus == JobExecutionStatus.FAILED) {
+
+                if (entity.getFinishedAt() == null) {
+                    entity.setFinishedAt(Instant.now());
+                }
+            }
+
+            repo.save(entity);
+        });
+    }
+}
+
+--------
+
+@Service
+@RequiredArgsConstructor
+public class JobLogService {
+
+    private final JobExecutionRepository jobRepo;
+    private final JobExecutionLogRepository logRepo;
+
+    public void appendChunk(UUID execId, String chunk) {
+
+        // nothing to append
+        if (chunk == null || chunk.isBlank()) return;
+
+        JobExecutionLogEntity logEntry = logRepo.findByJobExecutionId(execId)
+                .orElseGet(() -> {
+                    // first time: create log row
+                    var job = jobRepo.findById(execId).orElseThrow();
+                    var newEntry = new JobExecutionLogEntity();
+                    newEntry.setJobExecution(job);
+                    newEntry.setFullLog("");        // start empty
+                    return newEntry;
+                });
+
+        // append the chunk
+        logEntry.setFullLog(
+                logEntry.getFullLog() + chunk
+        );
+
+        logRepo.save(logEntry);
+    }
+
+    public void appendFinal(UUID execId, String lastChunk) {
+        appendChunk(execId, lastChunk);
+    }
+}
+
+
+---------------
+
+@Component
+@RequiredArgsConstructor
+public final class PodLogStreamer implements AutoCloseable {
+
+    private final KubernetesClient client;
+    private final JobLogService logService;
+
+    private LogWatch logWatch;
+    private volatile boolean running = false;
+
+    private static final int CHUNK_SIZE = 40;
+
+    public void start(String namespace, String jobName, UUID execId) {
+
+        running = true;
+
+        // 1. find pod
+        var pods = client.pods()
+                .inNamespace(namespace)
+                .withLabel("job-name", jobName)
+                .list()
+                .getItems();
+
+        if (pods == null || pods.isEmpty()) {
+            logService.appendFullLog(execId, "[WARN] No pod found for job=" + jobName);
+            return;
+        }
+
+        var podName = pods.get(0).getMetadata().getName();
+
+        // 2. prepare buffer
+        StringBuilder buffer = new StringBuilder();
+        int[] counter = {0};
+
+        // 3. open streaming logwatch
+        this.logWatch = client.pods()
+                .inNamespace(namespace)
+                .withName(podName)
+                .watchLog(new LogListener() {
+
+                    @Override
+                    public void onMessage(String msg) {
+                        if (!running) return;
+
+                        buffer.append(msg).append("\n");
+                        counter[0]++;
+
+                        if (counter[0] >= CHUNK_SIZE) {
+                            logService.appendFullLog(execId, buffer.toString());
+                            buffer.setLength(0);
+                            counter[0] = 0;
+                        }
+                    }
+
+                    @Override
+                    public void onClose() {
+                        if (buffer.length() > 0) {
+                            logService.appendFullLog(execId, buffer.toString());
+                        }
+                    }
+
+                    @Override
+                    public void onException(Exception e) {
+                        logService.appendFullLog(execId,
+                            "[ERROR] log stream crashed: " + e.getMessage());
+                    }
+                });
+    }
+
+    @Override
+    public void close() {
+        running = false;
+        if (logWatch != null) logWatch.close();
+    }
+}
+
+---------------------
+
+@Component
+@RequiredArgsConstructor
+public final class JobStatusStreamer implements AutoCloseable {
+
+    private final KubernetesClient client;
+    private final JobStatusService statusService;
+
+    private Watch watch;
+    private volatile boolean running = false;
+
+    public void start(String namespace, String jobName, UUID execId) {
+
+        running = true;
+
+        this.watch = client.batch().v1().jobs()
+                .inNamespace(namespace)
+                .withName(jobName)
+                .watch(new Watcher<Job>() {
+
+                    @Override
+                    public void eventReceived(Action action, Job job) {
+                        if (!running || job == null || job.getStatus() == null) return;
+
+                        var status = job.getStatus();
+                        var mapped = mapStatus(status);
+                        var msg = extractMessage(status);
+
+                        statusService.updateStatus(execId, mapped, msg);
+                    }
+
+                    @Override
+                    public void onClose(WatcherException cause) {
+                        if (cause != null) {
+                            statusService.updateStatus(
+                                    execId,
+                                    JobExecutionStatus.FAILED,
+                                    "Status watcher closed: " + cause.getMessage()
+                            );
+                        }
+                    }
+                });
+    }
+
+    private JobExecutionStatus mapStatus(JobStatus st) {
+        if (st.getSucceeded() != null && st.getSucceeded() > 0)
+            return JobExecutionStatus.SUCCEEDED;
+        if (st.getFailed() != null && st.getFailed() > 0)
+            return JobExecutionStatus.FAILED;
+        return JobExecutionStatus.RUNNING;
+    }
+
+    private String extractMessage(JobStatus st) {
+        var conditions = st.getConditions();
+        if (conditions == null || conditions.isEmpty()) return null;
+        return conditions.get(conditions.size() - 1).getMessage();
+    }
+
+    @Override
+    public void close() {
+        running = false;
+        if (watch != null) watch.close();
+    }
+}
+
+
+
