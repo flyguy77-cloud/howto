@@ -126,27 +126,17 @@ public final class JobMonitor implements AutoCloseable {
     private final JobStatusStreamer statusStreamer;
     private final PodLogStreamer logStreamer;
 
-    private Watch statusWatch;
-    private LogWatch logWatch;
+    private Watch statusWatch;     // géén annotaties
+    private LogWatch logWatch;     // géén annotaties
 
     public void start(String namespace, String jobName, UUID execId) {
-
-        // BEWARE WATCH REFERENCES
         this.statusWatch = statusStreamer.start(namespace, jobName, execId);
         this.logWatch = logStreamer.start(namespace, jobName, execId);
     }
 
     @Override
     public void close() {
-        if (statusWatch != null) {
-            try { statusWatch.close(); } catch (Exception ignore) {}
-        }
-
-        if (logWatch != null) {
-            try { logWatch.close(); } catch (Exception ignore) {}
-        }
-
-        try { statusStreamer.close(); } catch (Exception ignore) {}
-        try { logStreamer.close(); } catch (Exception ignore) {}
+        if (statusWatch != null) statusWatch.close();
+        if (logWatch != null) logWatch.close();
     }
 }
