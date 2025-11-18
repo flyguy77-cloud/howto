@@ -1,0 +1,152 @@
+FIX 1 -
+public interface JobExecutionLogRepository extends JpaRepository<JobExecutionLogEntity, Long> {
+
+    Optional<JobExecutionLogEntity> findByJobExecutionId(UUID execId);
+}
+
+zorg dat deze exact zo heet, findByJobExecutionId(UUID execId)
+
+FIX 2 -
+@Service
+@RequiredArgsConstructor
+public class JobLogService {
+
+    private final JobExecutionRepository jobRepo;
+    private final JobExecutionLogRepository logRepo;
+
+    public void appendChunk(UUID execId, String chunk) {
+
+        if (chunk == null || chunk.isBlank()) return;
+
+        JobExecutionLogEntity logEntry = logRepo.findByJobExecutionId(execId)
+                .orElseGet(() -> {
+                    var job = jobRepo.findById(execId)
+                            .orElseThrow(() -> new IllegalStateException("Job not found"));
+
+                    var entry = new JobExecutionLogEntity();
+                    entry.setJobExecution(job);
+                    entry.setFullLog("");     // 1 record start
+                    return entry;
+                });
+
+        // append chunk
+        logEntry.setFullLog(logEntry.getFullLog() + chunk);
+
+        // ONE save -> ONE row
+        logRepo.save(logEntry);
+    }
+}
+
+FIX 3 -
+@Entity
+public class JobExecutionLogEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @OneToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "job_execution_id", unique = true)
+    private JobExecutionEntity jobExecution;
+
+    @Lob
+    @Column(columnDefinition = "TEXT")
+    private String fullLog;
+}
+
+FIX 4 -
+private Watch statusWatch;
+private LogWatch logWatch;
+
+ 1. zijn er wel maar gebruikt ze NIET
+
+ 2. Je streamers returnen géén Watch/LogWatch
+statusStreamer.start(...);
+logStreamer.start(...);
+
+Fix 5 -
+JobStatusStreamer heeft:
+public Watch start(String namespace, String jobName, UUID execId) {
+    this.watch = client.batch().v1().jobs()
+            .inNamespace(namespace)
+            .withName(jobName)
+            .watch(new Watcher<Job>() {
+                @Override
+                public void eventReceived(Action action, Job job) { ... }
+                @Override
+                public void onClose(WatcherException cause) { ... }
+            });
+    return this.watch;
+}
+
+FIX 6 - 
+PodLogStreamer heeft:
+public LogWatch start(String namespace, String jobName, UUID execId) {
+
+    running = true;
+
+    // find pod
+    var pods = client.pods()
+        .inNamespace(namespace)
+        .withLabel("job-name", jobName)
+        .list()
+        .getItems();
+
+    if (pods.isEmpty()) {
+        logService.appendChunk(execId, "No pods found");
+        return null;
+    }
+
+    var podName = pods.get(0).getMetadata().getName();
+
+    StringBuilder buffer = new StringBuilder();
+    int[] counter = {0};
+
+    this.logWatch = client.pods()
+            .inNamespace(namespace)
+            .withName(podName)
+            .watchLog(new LogListener() {
+                @Override
+                public void onMessage(String line) { ... }
+                @Override
+                public void onClose() { ... }
+                @Override
+                public void onException(Exception e) { ... }
+            });
+
+    return this.logWatch;
+}
+
+FIX 7 -
+JobMonitor doet:
+@Component
+@RequiredArgsConstructor
+public final class JobMonitor implements AutoCloseable {
+
+    private final JobStatusStreamer statusStreamer;
+    private final PodLogStreamer logStreamer;
+
+    private Watch statusWatch;
+    private LogWatch logWatch;
+
+    public void start(String namespace, String jobName, UUID execId) {
+
+        // BEWARE WATCH REFERENCES
+        this.statusWatch = statusStreamer.start(namespace, jobName, execId);
+        this.logWatch = logStreamer.start(namespace, jobName, execId);
+    }
+
+    @Override
+    public void close() {
+        if (statusWatch != null) {
+            try { statusWatch.close(); } catch (Exception ignore) {}
+        }
+
+        if (logWatch != null) {
+            try { logWatch.close(); } catch (Exception ignore) {}
+        }
+
+        try { statusStreamer.close(); } catch (Exception ignore) {}
+        try { logStreamer.close(); } catch (Exception ignore) {}
+    }
+}
