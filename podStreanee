@@ -1,5 +1,3 @@
-Top Thierry.
-Ik ga jouw volledige setup compleet herschrijven in één clean, production-ready, Fabric8-7.x-compatible implementatie.
 
 Alles wat je nodig hebt zit hierin:
 	•	JobStatusWatcher (watch job status → DB update)
@@ -9,11 +7,10 @@ Alles wat je nodig hebt zit hierin:
 	•	Lifecycle: correct, single-run, geen duplicaten, geen retries, geen log-replays
 	•	Non-blocking, virtual threads, volledig closing-veilig
 
-Dit is letterlijk het ontwerp dat Argo Workflows intern gebruikt.
 
 ⸻
 
-🟩 PACKAGE STRUCTUUR
+PACKAGE STRUCTUUR
 
 com.yourapp.k8s
   ├── JobMonitor.java
@@ -26,9 +23,9 @@ com.yourapp.k8s
 
 ⸻
 
-🟦 1. JOB STATUS WATCHER
+1. JOB STATUS WATCHER
 
-📌 Dit handelt Kubernetes Job events af (Succeeded / Failed / Active)
+Dit handelt Kubernetes Job events af (Succeeded / Failed / Active)
 
 package com.yourapp.k8s.watcher;
 
@@ -77,11 +74,11 @@ public class JobStatusWatcher implements AutoCloseable {
 
 ⸻
 
-🟩 2. POD READY WATCHER
+2. POD READY WATCHER
 
-📌 Wacht totdat pod Running is → roept callback aan
-📌 Daarna sluit hij zichzelf
-📌 Nooit meer dan 1 keer log-start triggeren
+Wacht totdat pod Running is → roept callback aan
+Daarna sluit hij zichzelf
+Nooit meer dan 1 keer log-start triggeren
 
 package com.yourapp.k8s.watcher;
 
@@ -139,12 +136,12 @@ public class PodReadyWatcher implements AutoCloseable {
 
 ⸻
 
-🟩 3. POD LOG STREAMER
+3. POD LOG STREAMER
 
-📌 De moderne (niet-deprecated) log-streamer
-📌 Leest uitsluitend nieuwe logregels dankzij tailingLines(0)
-📌 Loopt in virtual thread
-📌 Schrijft alles in 1 DB-regel (appendChunk + appendFinal)
+De moderne (niet-deprecated) log-streamer
+Leest uitsluitend nieuwe logregels dankzij tailingLines(0)
+Loopt in virtual thread
+Schrijft alles in 1 DB-regel (appendChunk + appendFinal)
 
 package com.yourapp.k8s.logging;
 
@@ -227,12 +224,12 @@ public class PodLogStreamer implements AutoCloseable {
 
 ⸻
 
-🟩 4. DE JOB MONITOR (CENTRAAL ORCHESTRATOR PATROON)
+4. DE JOB MONITOR (CENTRAAL ORCHESTRATOR PATROON)
 
-📌 Start job status watcher
-📌 Start pod watcher → start log streamer wanneer pod ready is
-📌 Bewaart ALLE watchers
-📌 Sluit ALLES correct
+Start job status watcher
+Start pod watcher → start log streamer wanneer pod ready is
+Bewaart ALLE watchers
+Sluit ALLES correct
 
 package com.yourapp.k8s;
 
@@ -285,7 +282,7 @@ public final class JobMonitor implements AutoCloseable {
 
 ⸻
 
-⭐ WAT DIT ALLEMAAL OPLOST
+WAT DIT ALLEMAAL OPLOST
 
 ✔ Geen dubbele logs
 
@@ -316,5 +313,3 @@ public final class JobMonitor implements AutoCloseable {
 → appendChunk / appendFinal zorgt voor 1 record per job
 
 ⸻
-
-🎉 Wil je dat ik ook de DB services + entities + repositories er netjes naast zet in eenzelfde structuur, zodat het hele systeem 1-op-1 werkt?
