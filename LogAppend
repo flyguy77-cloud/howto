@@ -140,3 +140,148 @@ public final class JobMonitor implements AutoCloseable {
         if (logWatch != null) logWatch.close();
     }
 }
+
+
+
+
+Stap 1 — PodReadyWatcher (watch pods → detect READY → start logstream)
+
+@Component
+@RequiredArgsConstructor
+public class PodReadyWatcher implements AutoCloseable {
+
+    private final KubernetesClient client;
+    private Watch podWatch;
+
+    public interface PodReadyCallback {
+        void onPodReady(String podName);
+    }
+
+    public Watch start(String namespace, String jobName, PodReadyCallback callback) {
+
+        this.podWatch = client.pods()
+                .inNamespace(namespace)
+                .withLabel("job-name", jobName)
+                .watch(new Watcher<Pod>() {
+
+                    @Override
+                    public void eventReceived(Action action, Pod pod) {
+                        if (pod == null || pod.getStatus() == null) return;
+
+                        String phase = pod.getStatus().getPhase();
+                        if ("Running".equalsIgnoreCase(phase)) {
+
+                            String podName = pod.getMetadata().getName();
+                            callback.onPodReady(podName);
+
+                            // Hiermee sluiten we de pod-watcher
+                            close();
+                        }
+                    }
+
+                    @Override
+                    public void onClose(WatcherException cause) {
+                        // optional logging
+                    }
+                });
+
+        return this.podWatch;
+    }
+
+    @Override
+    public void close() {
+        if (podWatch != null) try { podWatch.close(); } catch (Exception ignored) {}
+    }
+}
+
+✔ Wat dit doet:
+	•	Watch pods van de job
+	•	Wanneer pod Running wordt → callback
+	•	Callback start logStreamer
+	•	Watch wordt automatisch gesloten omdat hij niet meer nodig is
+
+⸻
+
+Stap 2 — PodLogStreamer hoeft NIET meer pods te zoeken
+
+Hij krijgt al de juiste podName van PodReadyWatcher.
+
+public LogWatch start(String namespace, String podName, UUID execId) {
+
+    this.logWatch = client.pods()
+        .inNamespace(namespace)
+        .withName(podName)
+        .watchLog(new LogListener() {
+
+            StringBuilder buffer = new StringBuilder();
+            int counter = 0;
+
+            @Override
+            public void onMessage(String line) {
+                buffer.append(line).append("\n");
+                counter++;
+
+                if (counter >= 40) {
+                    logService.appendChunk(execId, buffer.toString());
+                    buffer.setLength(0);
+                    counter = 0;
+                }
+            }
+
+            @Override
+            public void onClose() {
+                if (buffer.length() > 0) {
+                    logService.appendFinal(execId, buffer.toString());
+                }
+            }
+        });
+
+    return this.logWatch;
+}
+
+
+⸻
+
+Stap 3 — JobMonitor orchestration
+
+Dit is de magic.
+
+@Component
+@RequiredArgsConstructor
+public final class JobMonitor implements AutoCloseable {
+
+    private final JobStatusStreamer statusStreamer;
+    private final PodReadyWatcher podReadyWatcher;
+    private final PodLogStreamer logStreamer;
+
+    private Watch statusWatch;
+    private Watch podWatch;
+    private LogWatch logWatch;
+
+    public void start(String namespace, String jobName, UUID execId) {
+
+        // 1. Start status watcher
+        this.statusWatch = statusStreamer.start(namespace, jobName, execId);
+
+        // 2. Start pod availability watcher
+        this.podWatch = podReadyWatcher.start(namespace, jobName, podName -> {
+            // Pod is READY → START LOG STREAMER
+            this.logWatch = logStreamer.start(namespace, podName, execId);
+        });
+    }
+
+    @Override
+    public void close() {
+
+        if (statusWatch != null) statusWatch.close();
+        if (podWatch != null) podWatch.close();
+        if (logWatch != null) logWatch.close();
+
+        try { statusStreamer.close(); } catch (Exception ignored) {}
+        try { podReadyWatcher.close(); } catch (Exception ignored) {}
+        try { logStreamer.close(); } catch (Exception ignored) {}
+    }
+}
+
+
+⸻
