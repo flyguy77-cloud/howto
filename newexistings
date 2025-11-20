@@ -1,0 +1,57 @@
+Stap 1 — Haal tijdens job creatie de Job UID op
+
+Wanneer je de Job aanmaakt:
+
+Job created = client.batch().v1().jobs()
+    .inNamespace(namespace)
+    .resource(job)
+    .create();
+
+String jobUid = created.getMetadata().getUid();
+
+Bewaar deze UID → geef hem door aan je JobMonitor:
+
+jobMonitor.start(namespace, jobName, execId, jobUid);
+
+
+⸻
+
+Stap 2 — PodReadyWatcher filter uitbreiden (minimaal)
+
+In jouw bestaande PodReadyWatcher voeg je maar 1 check toe.
+
+Before (jouw code-achtig):
+
+@Override
+public void eventReceived(Action action, Pod pod) {
+    if (pod == null || pod.getStatus() == null) return;
+
+    if ("Running".equalsIgnoreCase(pod.getStatus().getPhase())) {
+        callback.onPodReady(pod.getMetadata().getName());
+        close();
+    }
+}
+
+After (minimale patch, geen refactor):
+
+@Override
+public void eventReceived(Action action, Pod pod) {
+    if (pod == null || pod.getStatus() == null) return;
+
+    if (!isOwnedByJob(pod, jobUid)) return;
+
+    if ("Running".equalsIgnoreCase(pod.getStatus().getPhase())) {
+        callback.onPodReady(pod.getMetadata().getName());
+        close(); // voorkomt tweede trigger
+    }
+}
+
+En de helper (heel klein):
+
+private boolean isOwnedByJob(Pod pod, String jobUid) {
+    if (pod.getMetadata().getOwnerReferences() == null) return false;
+
+    return pod.getMetadata().getOwnerReferences().stream()
+            .anyMatch(o ->
+                    "Job".equals(o.getKind()) &&
+                    jobUid.equals
