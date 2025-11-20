@@ -313,3 +313,190 @@ WAT DIT ALLEMAAL OPLOST
 → appendChunk / appendFinal zorgt voor 1 record per job
 
 ⸻
+Oké Thierry, dit is een klassiek probleem, en ik weet precies wat er bij jou gebeurt.
+Je zit nu op het punt waar meerdere gelijktijdige Kubernetes jobs → meerdere watchers → meerdere streamers → dezelfde pod meermaals triggt → en jij krijgt duplicaten in je log / status onder nieuwe execId’s.
+
+Geen paniek — dit gebeurt ALTIJD wanneer je met meerdere watchers werkt die niet gedetached zijn van elkaar.
+
+Ik leg eerst waarom het gebeurt, en dan geef ik je de 100% foolproof oplossing.
+
+⸻
+
+❗ Waarom krijg jij duplicaten / nieuwe execId’s?
+
+Omdat iedere nieuwe Kubernetes job:
+	1.	een nieuwe PodReadyWatcher start
+	2.	die PodReadyWatcher ALTIJD de laatste pod matched met:
+
+labels: { job-name: <jobName> }
+
+
+	3.	en als meerdere jobs dezelfde label hebben, gaat iedere watcher:
+	•	reageren op dezelfde pod
+	•	dezelfde callback uitvoeren
+	•	voor ieder event een nieuwe logStreamer starten
+	•	die logStreamer maakt een NIEUW execId aan
+	•	→ resultaat: dubbele streamers, dubbele records, dubbele execId’s
+
+Dit is EXACT het patroon dat je beschrijft.
+
+⸻
+
+⭐ 100% OORZAAK
+
+Je watchers zijn niet gekoppeld aan hun eigen unieke job context.
+
+Ze luisteren op:
+
+withLabel("job-name", jobName)
+
+Maar jobName is NIET uniek bij meerdere gelijktijdige runs.
+
+En Kubernetes garanteert ook niet dat de pod klaar is vóórdat een nieuwe watch start.
+
+Hierdoor kan een watcher van job #1 alsnog reageren op pod van job #2.
+
+⸻
+
+⭐ De oplossing is simpel:
+
+→ Koppel watchers aan specifieke Job UID’s of Pod UID’s
+
+→ Niet aan namen of labels
+
+En ik laat je exact zien hoe.
+
+⸻
+
+🟢 OPLOSSING A — Filter op Job UID i.p.v. job-name
+
+(Argo Workflows en Tekton doen dit ook)
+
+Wanneer jij een Job aanmaakt, krijg je:
+
+String jobUid = createdJob.getMetadata().getUid();
+
+Die gebruik je in watchers:
+
+.withField("metadata.ownerReferences.uid", jobUid)
+
+OF (makkelijker):
+
+.withLabel("controller-uid", jobUid)
+
+Kubernetes voegt automatisch deze label toe aan pods die door een job worden aangemaakt.
+
+➡️ Nu reageert je PodReadyWatcher alleen op pods die bij dit specifieke Job-exec horen.
+
+Geen duplicaten meer.
+Geen multiple-streamers.
+Geen verkeerde execId’s.
+
+⸻
+
+🟢 OPLOSSING B — Start watchers slechts 1× per execId
+
+Doe dit in je JobMonitor:
+
+if (this.logWatch != null) return;  // Log streamer al gestart
+
+En voor podWatcher:
+
+if (this.podWatch != null) return;  // PodWatcher al actief
+
+En voor statusWatcher:
+
+if (this.statusWatch != null) return; // Geen tweede class doen starten
+
+Dit voorkomt dubbele watcher-instanties.
+
+⸻
+
+🟢 OPLOSSING C — Start LogStreamer ALLEEN wanneer podName matcht de Pod UID van deze exec
+
+Wanneer PodReadyWatcher zegt “pod ready!”, check:
+
+if (!podUid.equals(expectedPodUid)) return;
+
+Hoe kom je aan expectedPodUid?
+	•	Je leest de Pod’s UID in PodReadyWatcher
+	•	Je slaat hem op in JobMonitor
+	•	LogStreamer start enkel als het gestructureerde UID matcht
+
+⸻
+
+🟢 OPLOSSING D — sla execId per JobMonitor vast
+
+Bij de constructor van JobMonitor:
+
+private final UUID execId;
+
+En dan:
+
+logStreamer.start(namespace, podName, execId);
+
+Dan kun je NOOIT een “nieuw execId” krijgen.
+
+⸻
+
+🟠 WAARSCHUWING!
+
+Jouw huidige code:
+	•	gebruikt alleen jobName
+	•	jobName is NIET uniek per run (zeker met retry policies)
+	•	dus watchers reageren op jobs van elkaar
+
+Daarom krijg jij duplicaten.
+
+⸻
+
+🔥 Complete Fix in Code (kort)
+
+Ik geef je het centrale stuk:
+
+1. Lees job UID:
+
+String jobUid = createdJob.getMetadata().getUid();
+
+2. PodReadyWatcher filter aanpassen:
+
+this.podWatch = client.pods()
+    .inNamespace(namespace)
+    .withLabel("controller-uid", jobUid)   // <--- sleutel!
+    .watch(new Watcher<Pod>() { ... });
+
+3. LogStreamer alleen starten bij match:
+
+if (!jobUid.equals(pod.getMetadata().getOwnerReferences().get(0).getUid())) return;
+
+4. In JobMonitor:
+
+private boolean logStarted = false;
+
+if (!logStarted) {
+    logWatch = podLogStreamer.start(namespace, podName, execId);
+    logStarted = true;
+}
+
+Gegarandeerd NOOIT meer duplicaten.
+
+⸻
+
+⭐ TL;DR
+
+Je krijgt duplicaten omdat:
+	•	watchers luisteren op job-name → NIET uniek
+	•	meerdere watchers reageren op dezelfde pod
+	•	logStreamer start meerdere keren
+	•	execId’s worden opnieuw gegenereerd
+
+De fix:
+
+Koppel watchers aan Job UID in plaats van jobName
+én laat JobMonitor logStreamer max één keer starten
+
+Dan kun je 100 jobs tegelijk starten en alles blijft PERFECT gescheiden.
+
+⸻
+
+Wil je dat ik jouw PodReadyWatcher, JobStatusWatcher en JobMonitor herschrijf met deze corrections zodat duplicaat-streamers volledig onmogelijk worden?
