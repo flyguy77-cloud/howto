@@ -1,0 +1,143 @@
+package com.yourapp.k8s.monitor;
+
+import com.yourapp.k8s.watcher.JobStatusWatcher;
+import com.yourapp.k8s.watcher.PodReadyWatcher;
+import com.yourapp.k8s.logging.PodLogStreamer;
+import io.fabric8.kubernetes.client.Watch;
+import io.fabric8.kubernetes.client.dsl.LogWatch;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.*;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.UUID;
+
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class JobMonitorTest {
+
+    @Mock
+    JobStatusWatcher jobStatusWatcher;
+
+    @Mock
+    PodReadyWatcher podReadyWatcher;
+
+    @Mock
+    PodLogStreamer podLogStreamer;
+
+    @Mock
+    Watch statusWatch;
+
+    @Mock
+    Watch podWatch;
+
+    @Mock
+    LogWatch logWatch;
+
+    @InjectMocks
+    JobMonitor monitor;
+
+    UUID execId = UUID.randomUUID();
+
+    @Test
+    void start_shouldStartStatusWatcherAndPodWatcher() {
+        // Arrange
+        when(jobStatusWatcher.start(anyString(), anyString(), any(UUID.class)))
+                .thenReturn(statusWatch);
+
+        when(podReadyWatcher.start(anyString(), anyString(), any()))
+                .thenReturn(podWatch);
+
+        // Act
+        monitor.start("ns", "job-x", execId);
+
+        // Assert
+        verify(jobStatusWatcher)
+                .start("ns", "job-x", execId);
+
+        verify(podReadyWatcher)
+                .start(eq("ns"), eq("job-x"), any());
+    }
+
+    @Test
+    void start_shouldStartLogStreamerOnlyWhenPodReadyCallbackTriggered() {
+        // Arrange
+        when(jobStatusWatcher.start(anyString(), anyString(), any(UUID.class)))
+                .thenReturn(statusWatch);
+
+        // We capture the callback to simulate pod readiness
+        ArgumentCaptor<PodReadyWatcher.PodReadyCallback> cb =
+                ArgumentCaptor.forClass(PodReadyWatcher.PodReadyCallback.class);
+
+        when(podReadyWatcher.start(eq("ns"), eq("job-x"), cb.capture()))
+                .thenReturn(podWatch);
+
+        when(podLogStreamer.start(anyString(), anyString(), any(UUID.class)))
+                .thenReturn(logWatch);
+
+        // Act: start monitor
+        monitor.start("ns", "job-x", execId);
+
+        // Simuleer "pod ready" event → callback uitvoeren
+        cb.getValue().onPodReady("my-pod");
+
+        // Assert
+        verify(podLogStreamer)
+                .start("ns", "my-pod", execId);
+    }
+
+    @Test
+    void start_shouldOnlyStartLogStreamerOnce_EvenIfCallbackCalledTwice() {
+        // Arrange
+        when(jobStatusWatcher.start(anyString(), anyString(), any(UUID.class)))
+                .thenReturn(statusWatch);
+
+        ArgumentCaptor<PodReadyWatcher.PodReadyCallback> cb =
+                ArgumentCaptor.forClass(PodReadyWatcher.PodReadyCallback.class);
+
+        when(podReadyWatcher.start(eq("ns"), eq("job-x"), cb.capture()))
+                .thenReturn(podWatch);
+
+        when(podLogStreamer.start(anyString(), anyString(), any(UUID.class)))
+                .thenReturn(logWatch);
+
+        monitor.start("ns", "job-x", execId);
+
+        // Simuleer dubbele pod-ready events (K8s doet dat soms)
+        cb.getValue().onPodReady("pod-1");
+        cb.getValue().onPodReady("pod-1");
+
+        // Assert — logStreamer moet maar 1x starten
+        verify(podLogStreamer, times(1))
+                .start("ns", "pod-1", execId);
+    }
+
+    @Test
+    void close_shouldCloseAllWatchesAndComponents() throws Exception {
+        // Arrange: start() moet eerst watchers injecteren
+        when(jobStatusWatcher.start(anyString(), anyString(), any(UUID.class)))
+                .thenReturn(statusWatch);
+
+        when(podReadyWatcher.start(anyString(), anyString(), any()))
+                .thenReturn(podWatch);
+
+        when(podLogStreamer.start(anyString(), anyString(), any(UUID.class)))
+                .thenReturn(logWatch);
+
+        // Act
+        monitor.start("ns", "job-x", execId);
+        monitor.close();
+
+        // Assert: close alle watchers
+        verify(statusWatch).close();
+        verify(podWatch).close();
+        verify(logWatch).close();
+
+        // Close underlying components
+        verify(jobStatusWatcher).close();
+        verify(podReadyWatcher).close();
+        verify(podLogStreamer).close();
+    }
+}
