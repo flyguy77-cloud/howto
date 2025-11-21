@@ -1,0 +1,180 @@
+package com.yourapp.k8s.watcher;
+
+import com.yourapp.model.JobExecutionStatus;
+import com.yourapp.service.JobStatusService;
+import io.fabric8.kubernetes.api.model.batch.v1.*;
+import io.fabric8.kubernetes.client.*;
+import io.fabric8.kubernetes.client.dsl.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.*;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.List;
+import java.util.UUID;
+
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class JobStatusWatcherTest {
+
+    @Mock
+    KubernetesClient client;
+
+    @Mock
+    JobStatusService statusService;
+
+    @Mock
+    BatchAPIGroupDSL batch;
+
+    @Mock
+    V1APIGroupDSL v1;
+
+    @Mock
+    MixedOperation<Job, JobList, Resource<Job>> jobs;
+
+    @Mock
+    NonNamespaceOperation<Job, JobList, Resource<Job>> namespaced;
+
+    @Mock
+    Resource<Job> jobResource;
+
+    @Mock
+    Watch watch;
+
+    @InjectMocks
+    JobStatusWatcher watcher;
+
+    UUID execId = UUID.randomUUID();
+
+    private void mockK8sChain() {
+        when(client.batch()).thenReturn(batch);
+        when(batch.v1()).thenReturn(v1);
+        when(v1.jobs()).thenReturn(jobs);
+        when(jobs.inNamespace(anyString())).thenReturn(namespaced);
+        when(namespaced.withName(anyString())).thenReturn(jobResource);
+        when(jobResource.watch(any())).thenReturn(watch);
+    }
+
+    @Test
+    void start_shouldReturnWatchObject() {
+        mockK8sChain();
+
+        Watch result = watcher.start("ns", "job-x", execId);
+
+        // verify the chained call was executed
+        verify(jobResource).watch(any());
+
+        // ensure it returns what KubernetesClient returns
+        assert result == watch;
+    }
+
+    @Test
+    void eventReceived_shouldMapSucceededStatus() {
+        mockK8sChain();
+        watcher.start("ns", "job-x", execId);
+
+        // Create job with status.succeeded = 1
+        Job job = new Job();
+        JobStatus jobStatus = new JobStatus();
+        jobStatus.setSucceeded(1);
+        job.setStatus(jobStatus);
+
+        // Capture watcher
+        ArgumentCaptor<Watcher<Job>> captor = ArgumentCaptor.forClass(Watcher.class);
+        verify(jobResource).watch(captor.capture());
+        Watcher<Job> inner = captor.getValue();
+
+        // Act
+        inner.eventReceived(Watcher.Action.MODIFIED, job);
+
+        // Assert
+        verify(statusService).updateStatus(execId, JobExecutionStatus.SUCCEEDED, null);
+    }
+
+    @Test
+    void eventReceived_shouldMapFailedStatus() {
+        mockK8sChain();
+        watcher.start("ns", "job-x", execId);
+
+        Job job = new Job();
+        JobStatus jobStatus = new JobStatus();
+        jobStatus.setFailed(1);
+        job.setStatus(jobStatus);
+
+        ArgumentCaptor<Watcher<Job>> captor = ArgumentCaptor.forClass(Watcher.class);
+        verify(jobResource).watch(captor.capture());
+        Watcher<Job> inner = captor.getValue();
+
+        inner.eventReceived(Watcher.Action.MODIFIED, job);
+
+        verify(statusService).updateStatus(execId, JobExecutionStatus.FAILED, null);
+    }
+
+    @Test
+    void eventReceived_shouldUseConditionsToOverrideStatus() {
+        mockK8sChain();
+        watcher.start("ns", "job-x", execId);
+
+        Job job = new Job();
+        JobStatus jobStatus = new JobStatus();
+        JobCondition cond = new JobCondition();
+        cond.setType("Complete");
+        cond.setMessage("Completed normally");
+        jobStatus.setConditions(List.of(cond));
+        job.setStatus(jobStatus);
+
+        ArgumentCaptor<Watcher<Job>> captor = ArgumentCaptor.forClass(Watcher.class);
+        verify(jobResource).watch(captor.capture());
+        Watcher<Job> inner = captor.getValue();
+
+        inner.eventReceived(Watcher.Action.MODIFIED, job);
+
+        verify(statusService).updateStatus(execId, JobExecutionStatus.SUCCEEDED, "Completed normally");
+    }
+
+    @Test
+    void eventReceived_shouldIgnoreNullJobOrStatus() {
+        mockK8sChain();
+        watcher.start("ns", "job-x", execId);
+
+        ArgumentCaptor<Watcher<Job>> captor = ArgumentCaptor.forClass(Watcher.class);
+        verify(jobResource).watch(captor.capture());
+        Watcher<Job> inner = captor.getValue();
+
+        inner.eventReceived(Watcher.Action.MODIFIED, null);
+        inner.eventReceived(Watcher.Action.MODIFIED, new Job()); // status null
+
+        verify(statusService, never()).updateStatus(any(), any(), any());
+    }
+
+    @Test
+    void onClose_shouldSendFailedStatusWhenExceptionIsPresent() {
+        mockK8sChain();
+        watcher.start("ns", "job-x", execId);
+
+        ArgumentCaptor<Watcher<Job>> captor = ArgumentCaptor.forClass(Watcher.class);
+        verify(jobResource).watch(captor.capture());
+        Watcher<Job> inner = captor.getValue();
+
+        WatcherException ex = new WatcherException("boom");
+        inner.onClose(ex);
+
+        verify(statusService).updateStatus(execId, JobExecutionStatus.FAILED, "Watcher closed: boom");
+    }
+
+    @Test
+    void onClose_shouldDoNothingWhenCauseIsNull() {
+        mockK8sChain();
+        watcher.start("ns", "job-x", execId);
+
+        ArgumentCaptor<Watcher<Job>> captor = ArgumentCaptor.forClass(Watcher.class);
+        verify(jobResource).watch(captor.capture());
+        Watcher<Job> inner = captor.getValue();
+
+        inner.onClose(null);
+
+        verify(statusService, never()).updateStatus(any(), any(), any());
+    }
+}
