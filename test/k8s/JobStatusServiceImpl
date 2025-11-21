@@ -1,0 +1,137 @@
+package com.yourapp.service;
+
+import com.yourapp.entity.JobExecutionEntity;
+import com.yourapp.model.JobExecutionStatus;
+import com.yourapp.repository.JobExecutionRepository;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.*;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.time.Instant;
+import java.util.Optional;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class JobStatusServiceTest {
+
+    @Mock
+    JobExecutionRepository repo;
+
+    @InjectMocks
+    JobStatusService statusService;
+
+    @Captor
+    ArgumentCaptor<JobExecutionEntity> entityCaptor;
+
+    UUID execId = UUID.randomUUID();
+
+    @Test
+    void updateStatus_shouldNotSave_WhenJobNotFound() {
+        when(repo.findById(execId)).thenReturn(Optional.empty());
+
+        statusService.updateStatus(execId, JobExecutionStatus.RUNNING, "msg");
+
+        verify(repo, never()).save(any());
+    }
+
+    @Test
+    void updateStatus_shouldUpdateStatusAndMessage() {
+        JobExecutionEntity entity = new JobExecutionEntity();
+        entity.setStatus(JobExecutionStatus.PENDING);
+
+        when(repo.findById(execId)).thenReturn(Optional.of(entity));
+
+        statusService.updateStatus(execId, JobExecutionStatus.RUNNING, "Starting");
+
+        verify(repo).save(entityCaptor.capture());
+        JobExecutionEntity saved = entityCaptor.getValue();
+
+        assertThat(saved.getStatus()).isEqualTo(JobExecutionStatus.RUNNING);
+        assertThat(saved.getMessage()).isEqualTo("Starting");
+    }
+
+    @Test
+    void updateStatus_shouldSetStartedAt_WhenRunningAndNotSet() {
+        JobExecutionEntity entity = new JobExecutionEntity();
+        entity.setStatus(JobExecutionStatus.PENDING);
+        entity.setStartedAt(null);
+
+        when(repo.findById(execId)).thenReturn(Optional.of(entity));
+
+        statusService.updateStatus(execId, JobExecutionStatus.RUNNING, null);
+
+        verify(repo).save(any());
+        assertThat(entity.getStartedAt()).isNotNull();
+    }
+
+    @Test
+    void updateStatus_shouldNotOverwriteStartedAt_WhenAlreadySet() {
+        JobExecutionEntity entity = new JobExecutionEntity();
+        Instant ts = Instant.now().minusSeconds(100);
+        entity.setStartedAt(ts);
+
+        when(repo.findById(execId)).thenReturn(Optional.of(entity));
+
+        statusService.updateStatus(execId, JobExecutionStatus.RUNNING, null);
+
+        verify(repo).save(any());
+        assertThat(entity.getStartedAt()).isEqualTo(ts);
+    }
+
+    @Test
+    void updateStatus_shouldSetFinishedAt_WhenSucceeded() {
+        JobExecutionEntity entity = new JobExecutionEntity();
+        entity.setFinishedAt(null);
+
+        when(repo.findById(execId)).thenReturn(Optional.of(entity));
+
+        statusService.updateStatus(execId, JobExecutionStatus.SUCCEEDED, null);
+
+        verify(repo).save(any());
+        assertThat(entity.getFinishedAt()).isNotNull();
+    }
+
+    @Test
+    void updateStatus_shouldSetFinishedAt_WhenFailed() {
+        JobExecutionEntity entity = new JobExecutionEntity();
+        entity.setFinishedAt(null);
+
+        when(repo.findById(execId)).thenReturn(Optional.of(entity));
+
+        statusService.updateStatus(execId, JobExecutionStatus.FAILED, null);
+
+        verify(repo).save(any());
+        assertThat(entity.getFinishedAt()).isNotNull();
+    }
+
+    @Test
+    void updateStatus_shouldNotOverwriteFinishedAt_WhenAlreadySet() {
+        JobExecutionEntity entity = new JobExecutionEntity();
+        Instant ts = Instant.now().minusSeconds(80);
+        entity.setFinishedAt(ts);
+
+        when(repo.findById(execId)).thenReturn(Optional.of(entity));
+
+        statusService.updateStatus(execId, JobExecutionStatus.SUCCEEDED, null);
+
+        verify(repo).save(any());
+        assertThat(entity.getFinishedAt()).isEqualTo(ts);
+    }
+
+    @Test
+    void updateStatus_shouldIgnoreNullMessage() {
+        JobExecutionEntity entity = new JobExecutionEntity();
+        entity.setMessage("initial");
+
+        when(repo.findById(execId)).thenReturn(Optional.of(entity));
+
+        statusService.updateStatus(execId, JobExecutionStatus.RUNNING, null);
+
+        verify(repo).save(any());
+        assertThat(entity.getMessage()).isEqualTo("initial");
+    }
+}
