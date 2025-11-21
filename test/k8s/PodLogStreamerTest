@@ -1,0 +1,166 @@
+package com.yourapp.k8s.logging;
+
+import com.yourapp.service.JobLogService;
+import io.fabric8.kubernetes.api.model.Pod;
+import io.fabric8.kubernetes.api.model.PodList;
+import io.fabric8.kubernetes.client.KubernetesClient;
+import io.fabric8.kubernetes.client.dsl.*;
+import io.fabric8.kubernetes.client.dsl.base.OperationSupport;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.*;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.UUID;
+
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class PodLogStreamerTest {
+
+    @Mock
+    KubernetesClient client;
+
+    @Mock
+    JobLogService logService;
+
+    @Mock
+    MixedOperation<Pod, PodList, PodResource> podOp;
+
+    @Mock
+    NonNamespaceOperation<Pod, PodList, PodResource> namespaced;
+
+    @Mock
+    PodResource podResource;
+
+    @Mock
+    LogWatch logWatch;
+
+    @InjectMocks
+    PodLogStreamer logStreamer;
+
+    private void mockPodListWithName(String namespace, String podName) {
+        Pod pod = new Pod();
+        pod.setMetadata(new io.fabric8.kubernetes.api.model.ObjectMeta());
+        pod.getMetadata().setName(podName);
+
+        PodList list = new PodList();
+        list.setItems(List.of(pod));
+
+        when(client.pods()).thenReturn(podOp);
+        when(podOp.inNamespace(namespace)).thenReturn(namespaced);
+        when(namespaced.withLabel(eq("job-name"), anyString())).thenReturn(namespaced);
+        when(namespaced.list()).thenReturn(list);
+
+        when(namespaced.withName(podName)).thenReturn(podResource);
+    }
+
+    @Test
+    void start_shouldLogWarning_WhenNoPodsFound() {
+        // Arrange
+        UUID execId = UUID.randomUUID();
+
+        when(client.pods()).thenReturn(podOp);
+        when(podOp.inNamespace(any())).thenReturn(namespaced);
+        when(namespaced.withLabel(any(), any())).thenReturn(namespaced);
+        when(namespaced.list()).thenReturn(new PodList()); // empty list
+
+        // Act
+        logStreamer.start("ns", "job-x", execId);
+
+        // Assert
+        verify(logService).appendLog(eq(execId), contains("No pods found"));
+    }
+
+    @Test
+    void start_shouldStreamSingleLogLine() throws Exception {
+        // Arrange
+        UUID execId = UUID.randomUUID();
+        String namespace = "ns";
+        String podName = "my-pod";
+
+        mockPodListWithName(namespace, podName);
+
+        // Mock LogWatch + InputStream
+        String logs = "line1\n";
+        ByteArrayInputStream stream = new ByteArrayInputStream(logs.getBytes(StandardCharsets.UTF_8));
+
+        when(podResource.watchLog()).thenReturn(logWatch);
+        when(logWatch.getOutput()).thenReturn(stream);
+
+        // Act
+        logStreamer.start(namespace, "job-x", execId);
+
+        // Assert
+        verify(logService).appendLog(execId, "line1");
+    }
+
+    @Test
+    void start_shouldStreamMultipleLines() throws Exception {
+        UUID execId = UUID.randomUUID();
+        String namespace = "ns";
+        String podName = "my-pod";
+
+        mockPodListWithName(namespace, podName);
+
+        String logs = "line1\nline2\nline3\n";
+        ByteArrayInputStream stream = new ByteArrayInputStream(logs.getBytes(StandardCharsets.UTF_8));
+
+        when(podResource.watchLog()).thenReturn(logWatch);
+        when(logWatch.getOutput()).thenReturn(stream);
+
+        logStreamer.start(namespace, "job-x", execId);
+
+        verify(logService).appendLog(execId, "line1");
+        verify(logService).appendLog(execId, "line2");
+        verify(logService).appendLog(execId, "line3");
+    }
+
+    @Test
+    void start_shouldLogErrorMessage_WhenIOExceptionOccurs() throws Exception {
+        UUID execId = UUID.randomUUID();
+        String namespace = "ns";
+        String podName = "my-pod";
+
+        mockPodListWithName(namespace, podName);
+
+        // KAPOT inputstream → force IOException
+        InputStream brokenStream = mock(InputStream.class);
+        when(brokenStream.read(any(), anyInt(), anyInt()))
+                .thenThrow(new IOException("boom"));
+
+        when(podResource.watchLog()).thenReturn(logWatch);
+        when(logWatch.getOutput()).thenReturn(brokenStream);
+
+        // Act
+        logStreamer.start(namespace, "job-x", execId);
+
+        // Assert
+        verify(logService).appendLog(eq(execId), contains("Log streaming failed"));
+    }
+
+    @Test
+    void start_shouldCloseLogWatchAutomatically() throws Exception {
+        UUID execId = UUID.randomUUID();
+        String namespace = "ns";
+        String podName = "my-pod";
+
+        mockPodListWithName(namespace, podName);
+
+        String logs = "line1\n";
+        ByteArrayInputStream stream = new ByteArrayInputStream(logs.getBytes(StandardCharsets.UTF_8));
+
+        when(podResource.watchLog()).thenReturn(logWatch);
+        when(logWatch.getOutput()).thenReturn(stream);
+
+        // Act
+        logStreamer.start(namespace, "job-x", execId);
+
+        // Assert: try-with-resources sluit LogWatch → close() wordt aangeroepen
+        verify(logWatch).close();
+    }
+}
