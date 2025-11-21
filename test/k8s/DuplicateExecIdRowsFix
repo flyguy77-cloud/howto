@@ -1,0 +1,45 @@
+public UUID execute(RunScriptRequestDto dto) {
+    Job job = buildJob(dto);
+    Job created = client.batch().v1().jobs()
+        .inNamespace(namespace)
+        .resource(job)
+        .create();
+
+    String jobUid = created.getMetadata().getUid();
+    UUID execId = saveJobExecution(dto);
+
+    jobMonitor.start(namespace, job.getMetadata().getName(), execId, jobUid);
+
+    return execId;
+}
+
+JobMonitor
+public void start(String namespace, String jobName, UUID execId, String jobUid) {
+    this.statusWatch = jobStatusWatcher.start(namespace, jobName, execId);
+    this.podWatch = podReadyWatcher.start(namespace, jobUid, podName -> {
+        if (!logStarted) {
+            logStarted = true;
+            this.logWatch = podLogStreamer.start(namespace, podName, execId);
+        }
+    });
+}
+
+PodReadyWatcher
+public Watch start(String namespace, String jobUid, PodReadyCallback callback) {
+    this.podWatch = client.pods()
+        .inNamespace(namespace)
+        .watch(new Watcher<Pod>() {
+
+            @Override
+            public void eventReceived(Action action, Pod pod) {
+                if (!isOwnedByJob(pod, jobUid)) return;
+
+                if ("Running".equals(pod.getStatus().getPhase())) {
+                    callback.onPodReady(pod.getMetadata().getName());
+                    close();
+                }
+            }
+        });
+
+    return podWatch;
+}
