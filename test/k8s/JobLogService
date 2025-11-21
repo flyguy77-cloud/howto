@@ -1,0 +1,136 @@
+package com.yourapp.service;
+
+import com.yourapp.entity.JobExecutionEntity;
+import com.yourapp.entity.JobExecutionLogEntity;
+import com.yourapp.repository.JobExecutionRepository;
+import com.yourapp.repository.JobExecutionLogRepository;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.*;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.Optional;
+import java.util.UUID;
+
+import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.*;
+
+@ExtendWith(MockitoExtension.class)
+class JobLogServiceTest {
+
+    @Mock
+    JobExecutionRepository jobRepo;
+
+    @Mock
+    JobExecutionLogRepository logRepo;
+
+    @InjectMocks
+    JobLogService logService;
+
+    @Captor
+    ArgumentCaptor<JobExecutionLogEntity> logCaptor;
+
+    UUID execId = UUID.randomUUID();
+
+    @Test
+    void appendChunk_shouldDoNothing_WhenChunkIsNullOrBlank() {
+        logService.appendChunk(execId, null);
+        logService.appendChunk(execId, "");
+        logService.appendChunk(execId, "   ");
+
+        verifyNoInteractions(jobRepo);
+        verifyNoInteractions(logRepo);
+    }
+
+    @Test
+    void appendChunk_shouldCreateNewRecord_WhenNoExistingLogEntry() {
+        // Arrange
+        when(logRepo.findByJobExecutionId(execId))
+                .thenReturn(Optional.empty());
+
+        JobExecutionEntity job = new JobExecutionEntity();
+        job.setId(execId);
+
+        when(jobRepo.findById(execId))
+                .thenReturn(Optional.of(job));
+
+        // Act
+        logService.appendChunk(execId, "Hello");
+
+        // Assert
+        verify(logRepo).save(logCaptor.capture());
+        JobExecutionLogEntity saved = logCaptor.getValue();
+
+        assertThat(saved.getJobExecution()).isEqualTo(job);
+        assertThat(saved.getFullLog()).isEqualTo("Hello");
+    }
+
+    @Test
+    void appendChunk_shouldAppendToExistingRecord() {
+        // Arrange
+        JobExecutionLogEntity existing = new JobExecutionLogEntity();
+        existing.setFullLog("Hello");
+
+        when(logRepo.findByJobExecutionId(execId))
+                .thenReturn(Optional.of(existing));
+
+        // Act
+        logService.appendChunk(execId, " World");
+
+        // Assert
+        verify(logRepo).save(logCaptor.capture());
+        JobExecutionLogEntity saved = logCaptor.getValue();
+
+        assertThat(saved.getFullLog()).isEqualTo("Hello World");
+    }
+
+    @Test
+    void appendChunk_shouldThrow_WhenJobNotFound() {
+        // Arrange
+        when(logRepo.findByJobExecutionId(execId))
+                .thenReturn(Optional.empty());
+
+        when(jobRepo.findById(execId))
+                .thenReturn(Optional.empty());
+
+        // Act + Assert
+        assertThatThrownBy(() -> logService.appendChunk(execId, "X"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Job not found");
+    }
+
+    @Test
+    void appendChunk_shouldSaveOnce_PerCall() {
+        // Arrange
+        JobExecutionLogEntity existing = new JobExecutionLogEntity();
+        existing.setFullLog("");
+
+        when(logRepo.findByJobExecutionId(execId))
+                .thenReturn(Optional.of(existing));
+
+        // Act
+        logService.appendChunk(execId, "Part1");
+
+        // Assert
+        verify(logRepo, times(1)).save(any(JobExecutionLogEntity.class));
+    }
+
+    @Test
+    void appendChunk_shouldInitializeFullLogIfNull() {
+        // Arrange
+        JobExecutionLogEntity existing = new JobExecutionLogEntity();
+        existing.setFullLog(null);
+
+        when(logRepo.findByJobExecutionId(execId))
+                .thenReturn(Optional.of(existing));
+
+        // Act
+        logService.appendChunk(execId, "Chunk");
+
+        // Assert
+        verify(logRepo).save(logCaptor.capture());
+        JobExecutionLogEntity saved = logCaptor.getValue();
+
+        assertThat(saved.getFullLog()).isEqualTo("Chunk");
+    }
+}
