@@ -1,0 +1,174 @@
+package com.yourapp.service;
+
+import com.yourapp.k8s.JobMonitor;
+import com.yourapp.model.*;
+import com.yourapp.repository.JobExecutionRepository;
+import io.fabric8.kubernetes.api.model.batch.v1.Job;
+import io.fabric8.kubernetes.client.KubernetesClient;
+import io.fabric8.kubernetes.client.dsl.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.*;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.time.Instant;
+import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class JobExecutionServiceImplTest {
+
+    @Mock
+    KubernetesClient client;
+
+    @Mock
+    JobExecutionRepository jobRepo;
+
+    @Mock
+    JobMonitor jobMonitor;
+
+    @InjectMocks
+    JobExecutionServiceImpl service;
+
+    @Captor
+    ArgumentCaptor<JobExecutionEntity> jobCaptor;
+
+    @Mock
+    MixedOperation<Job, JobList, Resource<Job>> jobBatchMock;
+
+    @Mock
+    Resource<Job> jobResourceMock;
+
+    @Mock
+    NonNamespaceOperation<Job, JobList, Resource<Job>> jobNsMock;
+
+    @Mock
+    MixedOperation<Job, JobList, Resource<Job>> jobsOpMock;
+
+    @Test
+    void execute_shouldCreateJobRecord_AndStartMonitor_AndReturnStatusDto() {
+        // Arrange ------------------------------------------------------------
+        // DTO
+        ExecuteJobRequestDto request = new ExecuteJobRequestDto(
+                "echo test", 
+                "DemoJob"
+        );
+
+        // DB mock: jobRepo.save → geef entity terug met ID
+        UUID fakeId = UUID.randomUUID();
+        when(jobRepo.save(any())).thenAnswer(invocation -> {
+            JobExecutionEntity e = invocation.getArgument(0);
+            e.setId(fakeId);
+            return e;
+        });
+
+        // Kubernetes mock: deep stubbing
+        when(client.batch()).thenReturn(mock(BatchAPIGroupDSL.class));
+        BatchAPIGroupDSL batch = client.batch();
+
+        when(batch.v1()).thenReturn(mock(V1APIGroupDSL.class));
+        V1APIGroupDSL v1 = batch.v1();
+
+        when(v1.jobs()).thenReturn(jobBatchMock);
+
+        when(jobBatchMock.inNamespace(anyString())).thenReturn(jobNsMock);
+        when(jobNsMock.create(any(Job.class))).thenReturn(new Job());
+
+        // Namespace uit property
+        service.namespace = "test-ns";
+
+        // Act ------------------------------------------------------------
+        JobStatusResponseDto result = service.execute(request);
+
+        // Assert ------------------------------------------------------------
+        verify(jobRepo).save(jobCaptor.capture());
+        JobExecutionEntity saved = jobCaptor.getValue();
+
+        assertThat(saved.getJobName()).isEqualTo("DemoJob");
+        assertThat(saved.getStatus()).isEqualTo(JobExecutionStatus.PENDING);
+        assertThat(saved.getStartedAt()).isNotNull();
+
+        verify(jobMonitor)
+                .monitor(eq("test-ns"), eq("job-" + fakeId), eq(fakeId));
+
+        assertThat(result.jobId()).isEqualTo(fakeId);
+        assertThat(result.status()).isEqualTo(JobExecutionStatus.PENDING);
+    }
+
+    @Test
+    void getStatus_shouldReturnDto_WhenJobExists() {
+        // Arrange
+        UUID id = UUID.randomUUID();
+        JobExecutionEntity job = new JobExecutionEntity();
+        job.setId(id);
+        job.setJobName("Demo");
+        job.setJobType(JobExecutionType.SCRIPT);
+        job.setStatus(JobExecutionStatus.SUCCEEDED);
+        job.setStartedAt(Instant.now());
+        job.setFinishedAt(Instant.now());
+
+        when(jobRepo.findById(id)).thenReturn(Optional.of(job));
+
+        // Act
+        JobStatusResponseDto result = service.getStatus(id);
+
+        // Assert
+        assertThat(result.jobId()).isEqualTo(id);
+        assertThat(result.status()).isEqualTo(JobExecutionStatus.SUCCEEDED);
+    }
+
+    @Test
+    void getStatus_shouldThrow_WhenNotFound() {
+        // Arrange
+        UUID id = UUID.randomUUID();
+        when(jobRepo.findById(id)).thenReturn(Optional.empty());
+
+        // Act + Assert
+        assertThrows(EntityNotFoundException.class, () -> service.getStatus(id));
+    }
+
+    @Test
+    void getLogs_shouldReturnLogs_WhenPresent() {
+        // Arrange
+        UUID id = UUID.randomUUID();
+        JobExecutionEntity job = new JobExecutionEntity();
+        job.setId(id);
+
+        JobLogEntity l1 = new JobLogEntity();
+        l1.setTimestamp(Instant.now());
+        l1.setMessage("line1");
+
+        JobLogEntity l2 = new JobLogEntity();
+        l2.setTimestamp(Instant.now());
+        l2.setMessage("line2");
+
+        job.setLogs(List.of(l1, l2));
+
+        when(jobRepo.findById(id)).thenReturn(Optional.of(job));
+
+        // Act
+        List<JobLogResponseDto> logs = service.getLogs(id);
+
+        // Assert
+        assertThat(logs).hasSize(2);
+        assertThat(logs.get(0).message()).isEqualTo("line1");
+        assertThat(logs.get(1).message()).isEqualTo("line2");
+    }
+
+    @Test
+    void getLogs_shouldReturnEmpty_WhenNoJobFound() {
+        // Arrange
+        UUID id = UUID.randomUUID();
+        when(jobRepo.findById(id)).thenReturn(Optional.empty());
+
+        // Act
+        List<JobLogResponseDto> logs = service.getLogs(id);
+
+        // Assert
+        assertThat(logs).isEmpty();
+    }
+}
