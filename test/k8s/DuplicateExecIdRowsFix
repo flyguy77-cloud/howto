@@ -1,45 +1,211 @@
-public UUID execute(RunScriptRequestDto dto) {
-    Job job = buildJob(dto);
-    Job created = client.batch().v1().jobs()
-        .inNamespace(namespace)
-        .resource(job)
-        .create();
+@Component
+@RequiredArgsConstructor
+public final class JobMonitor {
 
-    String jobUid = created.getMetadata().getUid();
-    UUID execId = saveJobExecution(dto);
+    private final JobStatusWatcher jobStatusWatcher;
+    private final PodReadyWatcher podReadyWatcher;
+    private final PodLogStreamer podLogStreamer;
 
-    jobMonitor.start(namespace, job.getMetadata().getName(), execId, jobUid);
+==================
+ROOT CASE GEBRUIK >> GEEN Class Level fields!!!! WEGHALEN DUS!
+private Watch statusWatch;  doe het al hieronder Watch statusWatch = ...
+private Watch podWatch;
+private LogWatch logWatch;
+===================
 
-    return execId;
-}
+    public void start(String namespace, String jobName, UUID execId, String jobUid) {
 
-JobMonitor
-public void start(String namespace, String jobName, UUID execId, String jobUid) {
-    this.statusWatch = jobStatusWatcher.start(namespace, jobName, execId);
-    this.podWatch = podReadyWatcher.start(namespace, jobUid, podName -> {
-        if (!logStarted) {
-            logStarted = true;
-            this.logWatch = podLogStreamer.start(namespace, podName, execId);
-        }
-    });
-}
+        // 1. Per-job status watcher
+        Watch statusWatch = jobStatusWatcher.start(
+                namespace, jobName, execId, jobUid                 <<<---- jobUid voor de filter FIX!
+        );
 
-PodReadyWatcher
-public Watch start(String namespace, String jobUid, PodReadyCallback callback) {
-    this.podWatch = client.pods()
-        .inNamespace(namespace)
-        .watch(new Watcher<Pod>() {
+        // 2. Per-job pod watcher → start log watcher
+        Watch podWatch = podReadyWatcher.start(
+                namespace, jobUid, podName -> {
 
-            @Override
-            public void eventReceived(Action action, Pod pod) {
-                if (!isOwnedByJob(pod, jobUid)) return;
+                    // 3. Per-pod log watcher
+                    LogWatch logWatch = podLogStreamer.start(
+                            namespace,
+                            podName,
+                            execId,
+                            jobUid
+                    );
 
-                if ("Running".equals(pod.getStatus().getPhase())) {
-                    callback.onPodReady(pod.getMetadata().getName());
-                    close();
+                    // LogWatcher wordt door PodLogStreamer zelf gesloten
                 }
-            }
-        });
+        );
 
-    return podWatch;
+        // Eventueel opslaan in lokale variabelen als je wilt monitoren, 
+        // maar nooit als fields in de bean.
+    }
 }
+
+
+2. JobStatusWatcher – filter ALTIJD op UID en sluit watcher automatisch
+
+@Component
+@RequiredArgsConstructor
+public class JobStatusWatcher {
+
+    private final KubernetesClient client;
+    private final JobStatusService statusService;
+
+    public Watch start(String namespace, String jobName, UUID execId, String jobUid) {
+
+        return client.batch().v1().jobs()
+                .inNamespace(namespace)
+                .withName(jobName)               <<---                         // mag blijven
+                .watch(new Watcher<Job>() {
+
+                    @Override
+                    public void eventReceived(Action action, Job job) {
+                        if (job == null || job.getMetadata() == null) return;
+
+                        // UID FILTER (fix)
+                        if (!job.getMetadata().getUid().equals(jobUid)) return;   <<<---- FIX filter op jobUid!!
+
+                        var js = job.getStatus();
+                        if (js == null) return;
+
+                        JobExecutionStatus mapped =
+                                js.getSucceeded() != null && js.getSucceeded() > 0 ? JobExecutionStatus.SUCCEEDED :
+                                js.getFailed() != null && js.getFailed() > 0 ? JobExecutionStatus.FAILED :
+                                JobExecutionStatus.RUNNING;
+
+                        statusService.updateStatus(execId, mapped, js.getMessage());
+
+                        // AUTO-CLOSE
+                        if (mapped == JobExecutionStatus.SUCCEEDED ||
+                            mapped == JobExecutionStatus.FAILED) {
+                            close();                                                 <<<<<----- CLOSE!!!
+                        }
+                    }
+
+                    @Override
+                    public void onClose(WatcherException cause) {
+                        // eventueel loggen
+                    }
+                });
+    }
+}
+
+✔ UID-gefilterd
+✔ Per-job watcher
+✔ Sluit automatisch na success/failure
+
+⸻
+
+3. PodReadyWatcher – ook filteren op ownerReference.uid
+
+@Component
+@RequiredArgsConstructor
+public class PodReadyWatcher {
+
+    private final KubernetesClient client;
+
+    public Watch start(String namespace, String jobUid, PodReadyCallback callback) {
+
+        return client.pods()
+                .inNamespace(namespace)                             <<<<---- GEEN jobName meer!!!
+                .watch(new Watcher<Pod>() {
+
+                    @Override
+                    public void eventReceived(Action action, Pod pod) {
+                        if (pod == null || pod.getMetadata() == null) return;
+
+                        if (!isOwnedByJob(pod, jobUid)) return;         <<<--- WEET NOG NIET OF DIT WERKT!!
+
+                        var phase = pod.getStatus() != null
+                                ? pod.getStatus().getPhase()
+                                : null;
+
+                        if ("Running".equals(phase)) {
+                            callback.onPodReady(pod.getMetadata().getName());
+                        }
+
+                        if ("Succeeded".equals(phase) ||
+                            "Failed".equals(phase)) {
+                            close();                                  <<<<---- CLOSE!!!
+                        }
+                    }
+                });
+    }
+
+    private boolean isOwnedByJob(Pod pod, String jobUid) {
+        return pod.getMetadata().getOwnerReferences()
+                .stream()
+                .anyMatch(o -> o.getUid().equals(jobUid));
+    }
+}
+
+✔ Geen jobName meer
+✔ UID-exact
+✔ Auto-close
+
+⸻
+
+4. PodLogStreamer – per job/pod eigen LogWatch
+
+@Component
+@RequiredArgsConstructor
+public class PodLogStreamer {
+
+    private final KubernetesClient client;
+    private final JobLogService logService;
+
+    public LogWatch start(String namespace, String podName, UUID execId, String jobUid) {
+
+        try {
+            LogWatch watch = client.pods()
+                    .inNamespace(namespace)
+                    .withName(podName)
+                    .watchLog();
+
+            BufferedReader br = new BufferedReader(
+                    new InputStreamReader(watch.getOutput(), StandardCharsets.UTF_8)
+            );
+
+            // asynchroon verwerken (optioneel)
+            new Thread(() -> {
+                try (watch; br) {                                       <<<<---- let op deze
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        logService.appendChunk(execId, line + "\n");
+                    }
+                } catch (Exception ignored) {}
+            }).start();
+
+//*
+try (watch; br) { .. } betekend >>>
+“Open twee dingen, gebruik ze, sluit ze automatisch aan het einde.”
+
+Waarbij:
+	•	watch is een LogWatch, die een open streaming-connection naar Kubernetes is
+	•	br is je BufferedReader, die de logregels uitleest uit die stream
+
+En Java sluit beide netjes voor je zodra de { } block klaar is.
+//*
+
+            return watch;
+
+        } catch (Exception e) {
+            logService.appendChunk(execId,
+                    "[ERROR] Log streaming failed: " + e.getMessage());
+            return null;
+        }
+    }
+}
+
+✔ Per-job unieke LogWatch
+✔ LogWatch niet in fields
+✔ Geen lingering watchers
+
+⸻
+
+5. GEEN aanpassing nodig in je execute()
+
+String jobUid = created.getMetadata().getUid();
+UUID execId = saveJobExecution(dto);
+
+jobMonitor.start(namespace, job.getMetadata().getName(), execId, jobUid);
