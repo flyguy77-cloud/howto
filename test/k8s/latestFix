@@ -1,0 +1,74 @@
+public LogWatch start(String ns, String podName, UUID execId) {
+
+    LogWatch watch = client.pods()
+        .inNamespace(ns)
+        .withName(podName)
+        .watchLog();
+
+    BufferedReader br = new BufferedReader(
+        new InputStreamReader(watch.getOutput(), StandardCharsets.UTF_8)
+    );
+
+    // Start dedicated async worker
+    new Thread(() -> {
+        try (watch; br) { // <-- hier sluiten we backend-side
+            String line;
+            while ((line = br.readLine()) != null) {
+                jobLogService.appendChunk(execId, line + "\n");
+            }
+        } catch (Exception e) {
+            jobLogService.appendChunk(execId, "[ERROR] logstream failed: " + e.getMessage());
+        }
+    }).start();
+
+    return watch; // optional, maar veilig
+}
+
+-------
+
+
+public LogWatch start(String ns, String podName, UUID execId) {
+
+    LogWatch watch = client.pods()
+        .inNamespace(ns)
+        .withName(podName)
+        .watchLog();
+
+    BufferedReader br = new BufferedReader(
+        new InputStreamReader(watch.getOutput(), StandardCharsets.UTF_8)
+    );
+
+    new Thread(() -> {
+        try (watch; br) {
+
+            String line;
+            while ((line = br.readLine()) != null) {
+                processLine(execId, line);
+            }
+
+        } catch (Exception e) {
+            processLine(execId, "[ERROR] logstream failed: " + e.getMessage());
+        }
+    }).start();
+
+    return watch;
+}
+
+
+------
+private void processLine(UUID execId, String line) {
+    chunkBuffer.append(line).append('\n');
+
+    if (chunkBuffer.length() >= CHUNK_SIZE) {
+        flushChunk(execId);
+    }
+}
+
+-------
+private void flushChunk(UUID execId) {
+    jobLogService.appendChunk(execId, chunkBuffer.toString());
+    chunkBuffer.setLength(0);
+}
+
+------
+
