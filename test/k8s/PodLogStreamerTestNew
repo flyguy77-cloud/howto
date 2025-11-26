@@ -1,0 +1,146 @@
+@ExtendWith(MockitoExtension.class)
+class PodLogStreamerTest {
+
+    @Mock
+    KubernetesClient client;
+
+    @Mock
+    MixedOperation<Pod, PodList, PodResource> podClient;
+
+    @Mock
+    PodResource podResource;
+
+    @Mock
+    LogWatch logWatch;
+
+    @Mock
+    JobLogService logService;
+
+    PodLogStreamer streamer;
+
+    @BeforeEach
+    void setup() {
+        streamer = new PodLogStreamer(client, logService);
+    }
+
+    @Test
+    void testStreamingMultipleLines() throws Exception {
+
+        // 1. Mock pods() chain
+        when(client.pods()).thenReturn(podClient);
+        when(podClient.inNamespace("ns")).thenReturn(podClient);
+        when(podClient.withName("mypod")).thenReturn(podResource);
+
+        // 2. Mock LogWatch output (fake log content)
+        String fakeLogs = """
+                line1
+                line2
+                line3
+                """;
+
+        InputStream fakeStream =
+                new ByteArrayInputStream(fakeLogs.getBytes(StandardCharsets.UTF_8));
+
+        when(podResource.watchLog()).thenReturn(logWatch);
+        when(logWatch.getOutput()).thenReturn(fakeStream);
+
+        UUID execId = UUID.randomUUID();
+
+        // 3. Execute
+        streamer.start("ns", "mypod", execId);
+
+        // 4. Wait for async thread to finish
+        Thread.sleep(200);
+
+        // 5. Verify logservice calls
+        verify(logService, times(1))
+                .appendChunk(execId, "line1\n");
+
+        verify(logService, times(1))
+                .appendChunk(execId, "line2\n");
+
+        verify(logService, times(1))
+                .appendChunk(execId, "line3\n");
+
+        // Ensure nothing else was logged
+        verifyNoMoreInteractions(logService);
+    }
+}
+
+
+
+
+@Test
+void testLogWatchClosedAtEndOfStream() throws Exception {
+
+    when(client.pods()).thenReturn(podClient);
+    when(podClient.inNamespace("ns")).thenReturn(podClient);
+    when(podClient.withName("mypod")).thenReturn(podResource);
+
+    // empty stream simulates immediate EOF
+    InputStream fakeStream = new ByteArrayInputStream(new byte[0]);
+
+    when(podResource.watchLog()).thenReturn(logWatch);
+    when(logWatch.getOutput()).thenReturn(fakeStream);
+
+    UUID execId = UUID.randomUUID();
+
+    streamer.start("ns", "mypod", execId);
+
+    Thread.sleep(200);
+
+    verify(logWatch, times(1)).close();
+}
+
+
+
+@Test
+void testErrorDuringStreaming() throws Exception {
+
+    when(client.pods()).thenReturn(podClient);
+    when(podClient.inNamespace("ns")).thenReturn(podClient);
+    when(podClient.withName("mypod")).thenReturn(podResource);
+
+    // Fake input causes readLine() to throw
+    InputStream failingStream = new InputStream() {
+        @Override
+        public int read() throws IOException {
+            throw new IOException("boom");
+        }
+    };
+
+    when(podResource.watchLog()).thenReturn(logWatch);
+    when(logWatch.getOutput()).thenReturn(failingStream);
+
+    UUID execId = UUID.randomUUID();
+
+    streamer.start("ns", "mypod", execId);
+
+    Thread.sleep(200);
+
+    verify(logService, times(1))
+            .appendChunk(eq(execId), contains("[ERROR]"));
+}
+
+
+@Test
+void testStartIsNonBlocking() throws Exception {
+
+    when(client.pods()).thenReturn(podClient);
+    when(podClient.inNamespace("ns")).thenReturn(podClient);
+    when(podClient.withName("mypod")).thenReturn(podResource);
+
+    InputStream fakeStream =
+            new ByteArrayInputStream("one\n".getBytes(UTF_8));
+    when(podResource.watchLog()).thenReturn(logWatch);
+    when(logWatch.getOutput()).thenReturn(fakeStream);
+
+    UUID execId = UUID.randomUUID();
+
+    long start = System.currentTimeMillis();
+    streamer.start("ns", "mypod", execId);
+    long end = System.currentTimeMillis();
+
+    // start() must return instantly (<20ms)
+    assertTrue(end - start < 20);
+}
