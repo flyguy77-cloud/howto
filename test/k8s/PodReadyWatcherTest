@@ -1,0 +1,122 @@
+@ExtendWith(MockitoExtension.class)
+class PodReadyWatcherTest {
+
+    @Mock
+    KubernetesClient client;
+
+    @Mock
+    MixedOperation<Pod, PodList, PodResource> podOp;
+
+    @Mock
+    Watch mockWatch;
+
+    PodReadyWatcher watcher;
+
+    @BeforeEach
+    void setup() {
+        watcher = new PodReadyWatcher(client);
+    }
+
+    // Utility to create a Pod with custom owner + phase
+    private Pod createPod(String podName, String uid, String phase) {
+        OwnerReference owner = new OwnerReference();
+        owner.setUid(uid);
+
+        PodStatus status = new PodStatus();
+        status.setPhase(phase);
+
+        ObjectMeta meta = new ObjectMeta();
+        meta.setName(podName);
+        meta.setOwnerReferences(List.of(owner));
+
+        Pod pod = new Pod();
+        pod.setMetadata(meta);
+        pod.setStatus(status);
+        return pod;
+    }
+
+    @Test
+    void doesNotTriggerCallback_WhenOwnerDoesNotMatch() {
+
+        when(client.pods()).thenReturn(podOp);
+        when(podOp.inNamespace("ns")).thenReturn(podOp);
+        when(podOp.watch(any())).thenReturn(mockWatch);
+
+        PodReadyWatcher.PodReadyCallback cb = mock(PodReadyWatcher.PodReadyCallback.class);
+
+        watcher.start("ns", "target-uid", cb);
+
+        // simulate event with wrong owner
+        Watcher<Pod> internalWatcher = captureWatcher();
+        Pod fakePod = createPod("mypod", "OTHER-UID", "Running");
+
+        internalWatcher.eventReceived(Watcher.Action.MODIFIED, fakePod);
+
+        verify(cb, never()).onPodReady(anyString());
+    }
+
+    @Test
+    void doesNotTriggerCallback_WhenPodNotRunning() {
+
+        when(client.pods()).thenReturn(podOp);
+        when(podOp.inNamespace("ns")).thenReturn(podOp);
+        when(podOp.watch(any())).thenReturn(mockWatch);
+
+        PodReadyWatcher.PodReadyCallback cb = mock(PodReadyWatcher.PodReadyCallback.class);
+
+        watcher.start("ns", "target-uid", cb);
+
+        Watcher<Pod> internalWatcher = captureWatcher();
+        Pod fakePod = createPod("mypod", "target-uid", "Pending");
+
+        internalWatcher.eventReceived(Watcher.Action.MODIFIED, fakePod);
+
+        verify(cb, never()).onPodReady(anyString());
+    }
+
+    @Test
+    void triggersCallback_WhenOwnerMatches_AndRunning() {
+
+        when(client.pods()).thenReturn(podOp);
+        when(podOp.inNamespace("ns")).thenReturn(podOp);
+        when(podOp.watch(any())).thenReturn(mockWatch);
+
+        PodReadyWatcher.PodReadyCallback cb = mock(PodReadyWatcher.PodReadyCallback.class);
+
+        watcher.start("ns", "target-uid", cb);
+
+        Watcher<Pod> internalWatcher = captureWatcher();
+        Pod fakePod = createPod("runner-pod", "target-uid", "Running");
+
+        internalWatcher.eventReceived(Watcher.Action.MODIFIED, fakePod);
+
+        verify(cb, times(1)).onPodReady("runner-pod");
+    }
+
+    @Test
+    void closesWatch_WhenPodIsRunning() {
+
+        when(client.pods()).thenReturn(podOp);
+        when(podOp.inNamespace("ns")).thenReturn(podOp);
+        when(podOp.watch(any())).thenReturn(mockWatch);
+
+        PodReadyWatcher.PodReadyCallback cb = mock(PodReadyWatcher.PodReadyCallback.class);
+
+        watcher.start("ns", "target-uid", cb);
+
+        Watcher<Pod> internalWatcher = captureWatcher();
+        Pod fakePod = createPod("mypod", "target-uid", "Running");
+
+        internalWatcher.eventReceived(Watcher.Action.MODIFIED, fakePod);
+
+        verify(mockWatch, times(1)).close();
+    }
+
+    // Helper to capture Watcher from podOp.watch(...)
+    @SuppressWarnings("unchecked")
+    private Watcher<Pod> captureWatcher() {
+        ArgumentCaptor<Watcher> captor = ArgumentCaptor.forClass(Watcher.class);
+        verify(podOp).watch(captor.capture());
+        return captor.getValue();
+    }
+}
