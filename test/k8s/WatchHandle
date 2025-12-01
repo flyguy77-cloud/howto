@@ -1,0 +1,197 @@
+public final class WatchHandle {
+    private Watch watch;
+
+    public void set(Watch watch) {
+        this.watch = watch;
+    }
+
+    public void close() {
+        if (watch != null) {
+            try {
+                watch.close();
+            } catch (Exception ignored) {}
+        }
+    }
+}
+
+@Component
+@RequiredArgsConstructor
+public class JobStatusWatcher {
+
+    private final KubernetesClient client;
+    private final JobStatusService statusService;
+
+    public Watch start(
+            String namespace,
+            String jobName,
+            UUID execId,
+            String jobUid
+    ) {
+
+        WatchHandle handle = new WatchHandle();
+
+        Watch w = client.batch().v1().jobs()
+                .inNamespace(namespace)
+                .withName(jobName)
+                .watch(new Watcher<Job>() {
+                    @Override
+                    public void eventReceived(Action action, Job job) {
+                        if (job == null || job.getMetadata() == null) return;
+
+                        String uid = job.getMetadata().getUid();
+                        if (!jobUid.equals(uid)) return;
+
+                        var js = job.getStatus();
+                        if (js == null) return;
+
+                        JobExecutionStatus mapped =
+                                js.getSucceeded() != null && js.getSucceeded() > 0 ? JobExecutionStatus.SUCCEEDED :
+                                js.getFailed() != null && js.getFailed() > 0    ? JobExecutionStatus.FAILED :
+                                JobExecutionStatus.RUNNING;
+
+                        statusService.updateStatus(execId, mapped, js.getMessage());
+
+                        // Auto-close na final state
+                        if (mapped == JobExecutionStatus.SUCCEEDED ||
+                            mapped == JobExecutionStatus.FAILED) {
+                            handle.close();
+                        }
+                    }
+
+                    @Override
+                    public void onClose(WatcherException cause) {
+                        // niets speciaals nodig
+                    }
+                });
+
+        handle.set(w);
+        return w;
+    }
+}
+
+
+@Component
+@RequiredArgsConstructor
+public class PodReadyWatcher {
+
+    private final KubernetesClient client;
+
+    public interface PodReadyCallback {
+        void onPodReady(String podName);
+    }
+
+    public Watch start(
+            String namespace,
+            String jobUid,
+            PodReadyCallback callback
+    ) {
+
+        WatchHandle handle = new WatchHandle();
+        AtomicBoolean fired = new AtomicBoolean(false);
+
+        Watch w = client.pods()
+                .inNamespace(namespace)
+                .watch(new Watcher<Pod>() {
+                    @Override
+                    public void eventReceived(Action action, Pod pod) {
+                        if (pod == null || pod.getMetadata() == null || pod.getStatus() == null)
+                            return;
+
+                        boolean owned = pod.getMetadata()
+                                .getOwnerReferences()
+                                .stream()
+                                .anyMatch(o -> jobUid.equals(o.getUid()));
+
+                        if (!owned) return;
+
+                        String phase = pod.getStatus().getPhase();
+
+                        if ("Running".equals(phase)) {
+                            if (fired.compareAndSet(false, true)) {
+                                callback.onPodReady(pod.getMetadata().getName());
+                            }
+                        }
+
+                        // Pod klaar of gefaald? → watcher sluiten
+                        if ("Succeeded".equals(phase) || "Failed".equals(phase)) {
+                            handle.close();
+                        }
+                    }
+
+                    @Override
+                    public void onClose(WatcherException cause) {
+                        // niets extra's
+                    }
+                });
+
+        handle.set(w);
+        return w;
+    }
+}
+
+
+@Component
+@RequiredArgsConstructor
+public class PodLogStreamer {
+
+    private final KubernetesClient client;
+    private final JobLogService logService;
+
+    public LogWatch start(
+            String namespace,
+            String podName,
+            UUID execId,
+            String jobUid
+    ) {
+        LogWatch watch = client.pods()
+                .inNamespace(namespace)
+                .withName(podName)
+                .watchLog();
+
+        BufferedReader br = new BufferedReader(
+                new InputStreamReader(watch.getOutput(), StandardCharsets.UTF_8)
+        );
+
+        new Thread(() -> {
+            try (watch; br) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    logService.appendChunk(execId, line + "\n");
+                }
+            } catch (Exception e) {
+                logService.appendChunk(execId,
+                        "[ERROR] Log stream failed: " + e.getMessage());
+            }
+        }).start();
+
+        return watch;
+    }
+}
+
+
+@Component
+@RequiredArgsConstructor
+public final class JobMonitor {
+
+    private final JobStatusWatcher statusWatcher;
+    private final PodReadyWatcher podReadyWatcher;
+    private final PodLogStreamer logStreamer;
+
+    public void start(
+            String namespace,
+            String jobName,
+            UUID execId,
+            String jobUid
+    ) {
+        // Start status watcher
+        statusWatcher.start(namespace, jobName, execId, jobUid);
+
+        // Start pod watcher
+        podReadyWatcher.start(
+                namespace,
+                jobUid,
+                podName -> logStreamer.start(namespace, podName, execId, jobUid)
+        );
+    }
+}
+
