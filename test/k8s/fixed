@@ -1,0 +1,61 @@
+@Component
+@RequiredArgsConstructor
+public final class JobMonitor implements AutoCloseable {
+
+    private final JobStatusWatcher jobStatusWatcher;
+    private final PodReadyWatcher podReadyWatcher;
+    private final PodLogStreamer podLogStreamer;
+
+    // Geen class-level state → alles per job gebeurt binnen start()
+    @Override
+    public void close() {
+        // deze class heeft geen eigen state meer om te sluiten
+    }
+
+    /**
+     * Start monitoring van één job.
+     * Per job komt dit neer op:
+     *  - status watcher
+     *  - pod ready watcher
+     *  - op het juiste moment log watcher
+     */
+    public void start(String namespace, String jobName, UUID execId, String jobUid) {
+
+        // 1. StatusWatcher
+        final Watch statusWatch = jobStatusWatcher.start(
+                namespace,
+                jobName,
+                jobUid,
+                (finalStatus, message) -> {
+                    // sluit watcher wanneer job final is
+                    jobStatusWatcher.handleFinalStatus(execId, finalStatus, message);
+                    statusWatch.close();
+                }
+        );
+
+        // 2. PodReadyWatcher
+        final Watch podWatch = podReadyWatcher.start(
+                namespace,
+                jobUid,
+                podName -> {
+
+                    // Wanneer de pod "Running" is → start log streamer
+                    final LogWatch logWatch = podLogStreamer.start(
+                            namespace,
+                            podName,
+                            execId,
+                            jobUid,
+                            () -> {
+                                // Callback wanneer logstreamer klaar is
+                                logWatch.close();
+                            }
+                    );
+
+                    // PodReadyWatcher mag stoppen zodra pod gevonden is
+                    podWatch.close();
+                }
+        );
+
+        // Niets opslaan in fields — elke start() run is volledig self-contained
+    }
+}
