@@ -1,0 +1,129 @@
+@ExtendWith(MockitoExtension.class)
+class JobStatusWatcherTest {
+
+    @Mock KubernetesClient client;
+    @Mock BatchAPIGroupDSL batch;
+    @Mock V1APIGroupDSL v1;
+    @Mock MixedOperation<Job, ?, ?> jobs;
+    @Mock JobResource jobResource;
+    @Mock Watch watch;
+    @Mock JobStatusService statusService;
+
+    JobStatusWatcher watcher;
+
+    @BeforeEach
+    void setup() {
+        watcher = new JobStatusWatcher(client, statusService);
+
+        when(client.batch()).thenReturn(batch);
+        when(batch.v1()).thenReturn(v1);
+        when(v1.jobs()).thenReturn((MixedOperation) jobs);
+        when(jobs.inNamespace(anyString())).thenReturn((MixedOperation) jobs);
+        when(jobs.withName(anyString())).thenReturn(jobResource);
+        when(jobResource.watch(any())).thenReturn(watch);
+    }
+
+    @Test
+    void closesWatcherWhenSucceeded() {
+
+        ArgumentCaptor<Watcher<Job>> cap = ArgumentCaptor.forClass(Watcher.class);
+
+        watcher.start("ns", "job-1", UUID.randomUUID(), "UID123");
+
+        verify(jobResource).watch(cap.capture());
+
+        Watcher<Job> w = cap.getValue();
+
+        Job job = new Job();
+        JobStatus js = new JobStatus();
+        js.setSucceeded(1);
+        job.setStatus(js);
+        job.setMetadata(new ObjectMeta());
+        job.getMetadata().setUid("UID123");
+
+        w.eventReceived(Watcher.Action.MODIFIED, job);
+
+        verify(statusService).updateStatus(any(), eq(JobExecutionStatus.SUCCEEDED), any());
+        verify(watch).close();
+    }
+}
+
+
+@ExtendWith(MockitoExtension.class)
+class PodReadyWatcherTest {
+
+    @Mock KubernetesClient client;
+    @Mock MixedOperation<Pod, ?, ?> pods;
+    @Mock PodResource podResource;
+    @Mock Watch watch;
+
+    PodReadyWatcher watcher;
+
+    @BeforeEach
+    void setup() {
+        watcher = new PodReadyWatcher(client);
+
+        when(client.pods()).thenReturn((MixedOperation) pods);
+        when(pods.inNamespace(anyString())).thenReturn((MixedOperation) pods);
+        when(pods.watch(any())).thenReturn(watch);
+    }
+
+    @Test
+    void firesOnceAndClosesOnSucceeded() {
+
+        ArgumentCaptor<Watcher<Pod>> cap = ArgumentCaptor.forClass(Watcher.class);
+
+        watcher.start("ns", "JOBUID", podName -> {});
+
+        verify(pods).watch(cap.capture());
+        Watcher<Pod> w = cap.getValue();
+
+        Pod p = new Pod();
+        p.setMetadata(new ObjectMeta());
+        p.getMetadata().setOwnerReferences(List.of(new OwnerReference(null, null, "JOBUID", null)));
+        p.setStatus(new PodStatus());
+        p.getStatus().setPhase("Succeeded");
+
+        w.eventReceived(Watcher.Action.MODIFIED, p);
+
+        verify(watch).close();
+    }
+}
+
+
+
+@ExtendWith(MockitoExtension.class)
+class PodLogStreamerTest {
+
+    @Mock KubernetesClient client;
+    @Mock PodResource podResource;
+    @Mock LogWatch logWatch;
+    @Mock JobLogService logService;
+
+    PodLogStreamer streamer;
+
+    @BeforeEach
+    void setup() {
+        streamer = new PodLogStreamer(client, logService);
+
+        when(client.pods()).thenReturn((MixedOperation) podResource);
+        when(podResource.inNamespace(anyString())).thenReturn(podResource);
+        when(podResource.withName(anyString())).thenReturn(podResource);
+    }
+
+    @Test
+    void streamsLogLines() throws Exception {
+
+        when(podResource.watchLog()).thenReturn(logWatch);
+
+        ByteArrayInputStream fakeStream = new ByteArrayInputStream("a\nb\n".getBytes());
+        when(logWatch.getOutput()).thenReturn(fakeStream);
+
+        streamer.start("ns", "mypod", UUID.randomUUID(), "UID");
+
+        Thread.sleep(100); // laat async thread even draaien
+
+        verify(logService).appendChunk(any(), eq("a\n"));
+        verify(logService).appendChunk(any(), eq("b\n"));
+    }
+}
