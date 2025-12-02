@@ -1,0 +1,236 @@
+1. Essentials: Wat JobRunr perfect doet voor jouw workflow
+
+JobRunr kan:
+
+✔ taken schedulen in de toekomst
+
+(“run dit script morgen om 13:37”)
+
+✔ taken sequentieel laten draaien
+
+(niets start voordat de vorige klaar is)
+
+✔ taken parallel laten draaien
+
+(met jobBatch() of parallel streams)
+
+✔ context meegeven
+
+(execId, jobUid, script content, node metadata)
+
+✔ distributed draaien (Redis / SQL / memory)
+
+— belangrijk voor productie
+
+✔ retries, dashboards, dead letter queues
+
+— zonder dat jij dat zelf hoeft te implementeren
+
+✔ perfect integreren met Spring Boot
+
+(één annotatie en een @Service is genoeg)
+
+En het mooiste:
+
+Jouw K8s job-launcher wordt simpelweg een “unit of work” die JobRunr uitvoert.
+
+⸻
+
+2. Architectuur: hoe ziet dit eruit?
+
+Workflow:
+	•	bestaat uit nodes
+	•	elke node verwijst naar script, GitLab reference, parameters
+	•	edges bepalen volgorde/parallelisme
+
+JobRunr:
+	•	voert elke node uit als “BackgroundJob”
+	•	bewaakt status per node
+	•	jouw bestaande K8s-executor doet het échte werk
+
+⸻
+
+3. De mapping: workflow → JobRunr jobs
+
+Dit is waar je blij van wordt, want je architectuur van nodes + edges + executor past perfect.
+
+Een (sub)workflow = één JobRunr chain:
+
+JobRunr workflow:
+  └─ Node A
+      └─ Node B
+          └─ Node C
+
+Parallel nodes:
+
+Node A
+ ├─ Node B (in parallel)
+ ├─ Node C (in parallel)
+ └─ Node D (in parallel)
+
+
+⸻
+
+4. Concreet voorbeeld – Sequential Workflow
+
+Stel je hebt 3 nodes:
+	•	Node1: download CSV
+	•	Node2: run python analysis
+	•	Node3: archive results
+
+JobRunr code:
+
+public class WorkflowScheduler {
+
+    @Autowired
+    private BackgroundJobClient jobClient;
+
+    @Autowired
+    private KubernetesJobExecutor executor;
+
+    public UUID scheduleSequential(Workflow workflow) {
+
+        // 1. Root job
+        UUID rootJobId = jobClient.enqueue(() -> executor.runNode(workflow.getNode(1)));
+
+        // 2. next jobs as continuation
+        jobClient.enqueue(rootJobId,
+                () -> executor.runNode(workflow.getNode(2)));
+
+        jobClient.enqueue(rootJobId,
+                () -> executor.runNode(workflow.getNode(3)));
+
+        return rootJobId;
+    }
+}
+
+Waar executor.runNode() is:
+
+public void runNode(Node node) {
+    // jouw bestaande K8s executor:
+    UUID execId = jobExecutionService.execute(node.toDto());
+    waitUntilJobComplete(execId);
+}
+
+
+⸻
+
+5. Parallel nodes: zó simpel
+
+JobRunr heeft een “job batch” API.
+
+public UUID scheduleParallel(Collection<Node> nodes) {
+
+    return jobClient.<Void>enqueue(() -> {
+        JobRunrDashboard
+            .getBackgroundJobClient()
+            .createJobBatch(batch -> {
+                for (Node node : nodes) {
+                    batch.run(() -> executor.runNode(node));
+                }
+            });
+    });
+}
+
+Parallel nodes draaien dus volledig onafhankelijk.
+
+⸻
+
+6. Hybrid workflow (parallel + sequential)
+
+Stel:
+
+Node A → [ Node B, Node C, Node D ] (parallel) → Node E
+
+Dit is de real-world workflow automation flow.
+
+public UUID scheduleHybrid(Workflow wf) {
+
+    UUID jobId = jobClient.enqueue(() -> executor.runNode(wf.getNode("A")));
+
+    // parallel nodes
+    List<UUID> parallelJobs = new ArrayList<>();
+    for (Node node : wf.getParallelNodes("A")) {
+        parallelJobs.add(
+            jobClient.enqueue(() -> executor.runNode(node))
+        );
+    }
+
+    // continuation job depends on completion of all parallel nodes
+    jobClient.enqueue(parallelJobs,
+            () -> executor.runNode(wf.getNode("E")));
+
+    return jobId;
+}
+
+JobRunr regelt:
+	•	dependency management
+	•	job tracking
+	•	retries
+	•	persistence
+	•	monitoring dashboard
+
+Jij hoeft niets ingewikkelds te bouwen.
+
+⸻
+
+7. Cron job scheduling
+
+Wil jij:
+	•	dagelijks workflows draaien
+	•	elk uur caches verversen
+	•	wekelijks analytics draaien
+
+Super simpel:
+
+RecurringJob.enqueue(
+    "daily-workflow-" + wf.getId(),
+    Cron.daily(),
+    () -> scheduleSequential(wf)
+);
+
+
+⸻
+
+8. Spring Boot configuratie (SUPER KORT)
+
+application.properties:
+
+org.jobrunr.database.type=postgresql
+org.jobrunr.background-job-server.enabled=true
+org.jobrunr.dashboard.enabled=true
+
+Bean:
+
+@Bean
+public JobRunrConfigurer jobRunrConfigurer() {
+    return JobRunr.configure()
+        .useJobScheduler()
+        .useBackgroundJobServer()
+        .useDashboard()
+        .initialize();
+}
+
+Klaar.
+
+⸻
+
+TL;DR (jouw preview)
+
+Jij bouwt de workflow-engine
+
+met nodes, edges, parameters, GitLab scripts, executor, scheduler, UI.
+
+JobRunr voert de nodes uit
+
+met retries, logging, scheduling en monitoring.
+
+Jouw Kubernetes executor blijft je workhorse
+
+→ JobRunr wordt alleen de orchestrator.
+
+Sequentieel en parallel draaien is zó simpel
+	•	enqueue()
+	•	enqueue(rootJob, ...)
+	•	createJobBatch()
+	•	enqueue(jobsList, continuation)
