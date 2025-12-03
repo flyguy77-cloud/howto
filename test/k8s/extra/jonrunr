@@ -234,3 +234,227 @@ Sequentieel en parallel draaien is zó simpel
 	•	enqueue(rootJob, ...)
 	•	createJobBatch()
 	•	enqueue(jobsList, continuation)
+
+
++--------------------------------------------------------------------------------------+
+|                                [Workflow Execution System]                           |
++--------------------------------------------------------------------------------------+
+
+    +----------------------+        +------------------------------------+
+    |  Controller Layer    |        |   WorkflowSchedulerService         |
+    |   (start workflow)   | -----> | - scheduleWorkflow()               |
+    +----------------------+        | - enqueue JobRunr root job         |
+                                    +-------------------+----------------+
+                                                        |
+                                                        v
+                                    +------------------------------------+
+                                    |  BackgroundJobRequestHandler       |
+                                    |  (JobRunr Orchestrator)           |
+                                    |------------------------------------|
+                                    | - startWorkflow(workflowId)        |
+                                    | - scheduleNode(node)               |
+                                    | - executeNode(workflow,node)       |
+                                    | - determine next nodes             |
+                                    +-------------------+----------------+
+                                                        |
+                                       triggers          | calls
+                                                        v
+                             +----------------------------------------------+
+                             |                NodeExecutor                  |
+                             |----------------------------------------------|
+                             | - execute(node)                              |
+                             | - koppeling met jouw Kubernetes JobExecutor |
+                             +-------------------+--------------------------+
+                                                        |
+                                                        |
+                                                        v
++------------------------+              +------------------------------+
+| JobExecutionService    | <---------- | Kubernetes Cluster (Fabric8) |
+| (bestaande K8s runner) |   status    | - Jobs                        |
+| - start K8s job         |   logs      | - Pods                        |
+| - monitoring            |             | - Log streams                 |
++------------------------+             +------------------------------+
+
+                                        
+                                      writes status/logs
+                                        to database
+                                              |
+                                              v
+                                    +--------------------------+
+                                    |   Database Layer         |
+                                    |--------------------------|
+                                    | workflow_execution       |
+                                    | workflow_node_execution  |
+                                    | job_execution            |
+                                    | job_execution_log        |
+                                    +--------------------------+
+
+
+
+	•	Controllers → ontvangen start-verzoeken
+	•	WorkflowSchedulerService → maakt JobRunr root job aan
+	•	BackgroundJobRequestHandler → orchestrator (de workflow-engine)
+	•	NodeExecutor → bepaalt de uitvoering per node
+	•	JobExecutionServiceImpl → jouw huidige Kubernetes job executor
+	•	Kubernetes Cluster → voert echte workloads uit
+	•	Database → status en logging
+
+⸻
+
+Wat JobRunr voor jou regelt
+
+De Spring Boot starter van JobRunr regelt:
+	•	de JobRunr BackgroundJobServer
+	•	de JobRunr Dashboard
+	•	threadpools
+	•	retries
+	•	persistente job storage
+	•	idempotentie
+	•	distributed execution
+	•	automatische retry policies
+	•	dead-letter queues
+
+Dus je hoeft geen eigen threadpools of schedulers meer te bouwen.
+
+Dat betekent dat JIJ in jouw applicatie maar twee dingen nodig hebt:
+
+⸻
+
+1. WorkflowSchedulerService (de entrypoint voor workflows)
+
+Deze doet:
+	•	workflow uit database ophalen
+	•	workflow execution ID genereren
+	•	de root van de workflow enqueue-en via JobRunr
+
+Voorbeeld:
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowSchedulerService {
+
+    private final BackgroundJobRequestHandler handler;
+
+    public UUID scheduleWorkflow(UUID workflowId) {
+
+        UUID execId = UUID.randomUUID();
+
+        BackgroundJob.enqueue(() ->
+            handler.startWorkflow(workflowId, execId)
+        );
+
+        return execId;
+    }
+}
+
+Dit is letterlijk je “start workflow” façade.
+
+⸻
+
+2. BackgroundJobRequestHandler (de orkestrator / workflow engine)
+
+Deze is de core workflow-engine, maar nog steeds best compact.
+
+Hij doet:
+	•	startWorkflow() → zoekt startnodes → plant die in
+	•	executeNode() → voert node uit → plant volgende nodes in
+	•	beheert de branching, ALL/ANY gateways, parallelisme
+	•	koppelt met jouw bestaande Kubernetes executor
+
+Voorbeeld:
+
+@Service
+@RequiredArgsConstructor
+public class BackgroundJobRequestHandler {
+
+    private final WorkflowRepository wfRepo;
+    private final NodeExecutor nodeExecutor;
+
+    public void startWorkflow(UUID workflowId, UUID execId) {
+        var wf = wfRepo.findById(workflowId).orElseThrow();
+        var startNodes = wf.getStartNodes();
+
+        for (var node : startNodes) {
+            scheduleNode(wf.getId(), node.getId(), execId);
+        }
+    }
+
+    private void scheduleNode(UUID workflowId, UUID nodeId, UUID execId) {
+        BackgroundJob.enqueue(() ->
+            executeNode(workflowId, nodeId, execId)
+        );
+    }
+
+    public void executeNode(UUID workflowId, UUID nodeId, UUID execId) {
+        var wf = wfRepo.findById(workflowId).orElseThrow();
+        var node = wf.findNode(nodeId);
+
+        var result = nodeExecutor.execute(node, execId);
+
+        for (var next : wf.getNextNodes(node)) {
+            if (wf.shouldTrigger(next, execId))
+                scheduleNode(workflowId, next.getId(), execId);
+        }
+    }
+}
+
+Meer is het niet.
+JobRunr doet al het “moeilijke werk”.
+
+⸻
+
+3. NodeExecutor (optioneel — maar praktisch gezien wél nodig)
+
+Omdat jij K8s runt:
+
+@Service
+@RequiredArgsConstructor
+public class NodeExecutor {
+
+    private final JobExecutionServiceImpl k8sExecutor;
+
+    public NodeResult execute(NodeEntity node, UUID execId) {
+        return switch (node.getType()) {
+            case RUN_SCRIPT -> runScript(node, execId);
+            case LOAD_SCRIPT -> load(node);
+            default -> new NodeResult("OK", true);
+        };
+    }
+
+    private NodeResult runScript(NodeEntity node, UUID execId) {
+        UUID jobId = k8sExecutor.execute(node.toDto());
+        return new NodeResult(jobId.toString(), true);
+    }
+}
+
+Niet verplicht, maar maakt je code extreem clean.
+
+⸻
+
+Dus… heb je écht alleen 2 Spring services nodig?
+
+✔ Ja voor JobRunr integratie
+
+✔ Ja voor workflow scheduling
+
+✔ Ja voor node orchestration
+
+Maar je hebt daarnaast nog steeds je bestaande Kubernetes executor nodig
+
+(en je status/log watchers blijven actief, maar die staan al volledig los van JobRunr).
+
+⸻
+
+Voor JobRunr heb je exact nodig:
+
+1. WorkflowSchedulerService
+
+→ ontvangt “run workflow”
+→ start JobRunr root job
+
+2. BackgroundJobRequestHandler
+
+→ voert nodes uit
+→ plant vervolg-nodes in
+→ doet parallel branching
+→ koppelt met jouw K8s executor
