@@ -1,0 +1,245 @@
+Ja, goeie vraag — je gevoel klopt:
+de échte logica zit in je workflow + nodes, niet in die ene BackgroundJob.enqueue-regel.
+
+Die regel is eigenlijk maar: “laat JobRunr dit asynchroon uitvoeren”.
+Alle “wat is een startnode, is dit manual of schedule, welke node-types dan?” gebeurt daarvoor of daarna in jouw eigen code.
+
+Laten we het even ontleden.
+
+⸻
+
+1. Wat doet JobRunr hier nu echt?
+
+Dit stukje:
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowSchedulerService {
+
+    private final BackgroundJobRequestHandler jobHandler;
+
+    public UUID scheduleWorkflow(WorkflowEntity workflow) {
+
+        UUID workflowExecId = UUID.randomUUID();
+
+        // start de workflow async
+        BackgroundJob.enqueue(() ->
+            jobHandler.startWorkflow(workflow.getId(), workflowExecId)
+        );
+
+        return workflowExecId;
+    }
+}
+
+doet eigenlijk alleen dit:
+	•	maak een workflow-execution-id
+	•	zeg tegen JobRunr: “voer later jobHandler.startWorkflow(...) uit”
+
+Dus: JobRunr weet niks van nodes, edges, RUN_SCRIPT/LOAD_SCRIPT, startnodes, etc.
+Dat is juist jouw domein.
+
+De truc is: je stopt die logica in BackgroundJobRequestHandler.startWorkflow en in je workflow datamodel.
+
+⸻
+
+2. Wat moet er in je workflow-model bij?
+
+Je gaf zelf al de ingrediënten:
+	•	node types: RUN_SCRIPT, LOAD_SCRIPT
+	•	een startNode die aangeeft:
+	•	MANUAL start
+	•	SCHEDULED start
+
+Dus je hebt grofweg nodig:
+
+public enum NodeKind {
+    START,
+    TASK,
+    GATEWAY
+}
+
+public enum StartMode {
+    MANUAL,
+    SCHEDULED
+}
+
+public enum NodeType {
+    RUN_SCRIPT,
+    LOAD_SCRIPT,
+    // …
+}
+
+public class NodeEntity {
+    private UUID id;
+    private NodeKind kind;
+    private NodeType type;
+    private StartMode startMode; // alleen relevant als kind == START
+    // ...
+}
+
+En in je WorkflowEntity zoiets als:
+
+public class WorkflowEntity {
+
+    private UUID id;
+    private List<NodeEntity> nodes;
+    private List<EdgeEntity> edges;
+
+    public List<NodeEntity> findStartNodes(StartMode mode) {
+        return nodes.stream()
+                .filter(n -> n.getKind() == NodeKind.START)
+                .filter(n -> n.getStartMode() == mode)
+                .toList();
+    }
+
+    public List<NodeEntity> nextNodes(NodeEntity node) {
+        // via edges bepalen welke nodes erna komen
+    }
+}
+
+
+⸻
+
+3. Hoe start je MANUAL vs SCHEDULED?
+
+Manual start (user klikt “Run workflow”)
+
+Controller:
+
+@PostMapping("/workflows/{id}/run")
+public UUID runWorkflow(@PathVariable UUID id) {
+    return workflowSchedulerService.runManual(id);
+}
+
+Scheduler:
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowSchedulerService {
+
+    private final BackgroundJobRequestHandler handler;
+    private final WorkflowRepository wfRepo;
+
+    public UUID runManual(UUID workflowId) {
+        UUID execId = UUID.randomUUID();
+
+        BackgroundJob.enqueue(() ->
+            handler.startWorkflow(workflowId, execId, StartMode.MANUAL)
+        );
+
+        return execId;
+    }
+}
+
+Scheduled start (via JobRunr recurring job)
+
+Bij het opslaan van een workflow met schedule-config:
+
+public void registerSchedule(UUID workflowId, String cronExpr) {
+
+    RecurringJob.addOrUpdate(
+        "workflow-" + workflowId,
+        () -> handler.startWorkflow(workflowId, UUID.randomUUID(), StartMode.SCHEDULED),
+        cronExpr
+    );
+}
+
+⸻
+
+4. Waar gebeurt dan de “echte magie”? → in BackgroundJobRequestHandler
+
+Hier bepaal je:
+	•	welke startNodes worden gebruikt
+	•	hoe RUN_SCRIPT / LOAD_SCRIPT worden uitgevoerd
+	•	in welke volgorde nodes lopen (edges)
+	•	of iets parallel of sequentieel gaat
+
+Bijvoorbeeld:
+
+@Service
+@RequiredArgsConstructor
+public class BackgroundJobRequestHandler {
+
+    private final WorkflowRepository wfRepo;
+    private final NodeExecutor nodeExecutor; // koppelt naar je K8s executor
+
+    public void startWorkflow(UUID workflowId, UUID execId, StartMode mode) {
+
+        WorkflowEntity wf = wfRepo.findById(workflowId)
+                .orElseThrow();
+
+        var startNodes = wf.findStartNodes(mode);
+        if (startNodes.isEmpty()) {
+            // fallback: nodes zonder inkomende edges
+        }
+
+        for (NodeEntity startNode : startNodes) {
+            scheduleNode(wf.getId(), startNode.getId(), execId);
+        }
+    }
+
+    private void scheduleNode(UUID wfId, UUID nodeId, UUID execId) {
+        BackgroundJob.enqueue(() ->
+            executeNode(wfId, nodeId, execId)
+        );
+    }
+
+    public void executeNode(UUID wfId, UUID nodeId, UUID execId) {
+
+        WorkflowEntity wf = wfRepo.findById(wfId).orElseThrow();
+        NodeEntity node   = wf.findNode(nodeId);
+
+        // HIER komt je node type logica:
+        NodeResult result = nodeExecutor.execute(node, execId); // RUN_SCRIPT vs LOAD_SCRIPT
+
+        // bepaal volgende nodes via edges
+        var nextNodes = wf.nextNodes(node);
+        for (NodeEntity next : nextNodes) {
+            if (wf.shouldTrigger(next, execId)) {
+                scheduleNode(wfId, next.getId(), execId);
+            }
+        }
+    }
+}
+
+En NodeExecutor doet dan de mapping naar jouw bestaande JobExecutionService:
+
+@Service
+@RequiredArgsConstructor
+public class NodeExecutor {
+
+    private final JobExecutionServiceImpl jobExecutor;
+
+    public NodeResult execute(NodeEntity node, UUID execId) {
+        return switch (node.getType()) {
+            case RUN_SCRIPT  -> runScript(node, execId);
+            case LOAD_SCRIPT -> loadScript(node, execId);
+            // andere types
+        };
+    }
+
+    private NodeResult runScript(NodeEntity node, UUID execId) {
+        UUID jobId = jobExecutor.execute(node.toRunScriptDto());
+        return new NodeResult(jobId.toString(), true);
+    }
+}
+
+
+⸻
+
+5. Dus: is die WorkflowSchedulerService echt zo simpel?
+
+Ja — én nee:
+	•	Ja: qua JobRunr-integratie is dat alles → één BackgroundJob.enqueue of RecurringJob.addOrUpdate.
+	•	Nee: de workflow-logica (startNode, nodeType, edges) zit juist in jouw eigen services en entities, niet in JobRunr.
+
+Je kunt het zo zien:
+	•	JobRunr = “ik voer deze Java-methode later en veilig uit”
+	•	Jouw code = “welke nodes, welk pad, welke volgorde”
+
+Of anders:
+
+JobRunr is je motor,
+jouw workflowmodel is je navigatie.
+
+⸻ vs manual” zit in je StartMode + BackgroundJobRequestHandler.
