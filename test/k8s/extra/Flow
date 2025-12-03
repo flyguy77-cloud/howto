@@ -1,0 +1,199 @@
+De workflow-logica moet je zelf bouwen — dat klopt.
+Maar hoe je dat doet, kan véél simpeler dan het lijkt als je het opknipt in kleine heldere responsibilities.
+
+⸻
+JobRunr > plant jobs in.
+JIJ > bepaalt de workflow-structuur.
+
+Dus je hebt 3 lagen nodig:
+
+(A) Workflow Store → bewaart workflows
+
+(Beste: JSONB DAG in Postgres, of jouw node/edge tabellen)
+
+(B) Workflow Engine → parseert en interprteert de workflow
+
+(Ontleedt nodes, edges, gateways, parallel paths, enz.)
+
+(C) Workflow Scheduler → activeert workflows (manual of schedule via JobRunr)
+
+(Start altijd bij de start-nodes → plant de rest in JobRunr in)
+
+Dit is hoe elke professionele workflow-engine werkt (Airflow, Temporal, Argo Workflows, Prefect).
+
+⸻
+
+ASCII DIAGRAM (HOOFDOVERZICHT)
+
+                      ┌─────────────────────────────┐
+                      │    Workflow Repository       │
+                      │ (Nodes, Edges, ScheduleCfg)  │
+                      └──────────────┬──────────────┘
+                                     │
+                    "Workflow saved" │
+                                     ▼
+                         ┌──────────────────────┐
+                         │   Workflow Poller    │
+                         │ (detect schedule cfg)│
+                         └───────────┬──────────┘
+                                     │
+                    schedule?        │ yes
+                                     ▼
+                            ┌─────────────────┐
+                            │  JobRunr Cron   │
+                            │ RecurringJob... │
+                            └───────┬─────────┘
+                                    │ triggers
+                                    ▼
+                          ┌──────────────────────┐
+                          │ WorkflowSchedulerSvc │
+                          │ - generate execId    │
+                          │ - enqueue root node  │
+                          └──────────┬───────────┘
+                                     │
+                                     ▼
+                  ┌──────────────────────────────┐
+                  │ BackgroundJobRequestHandler  │  (JobRunr Worker)
+                  │  - startWorkflow()           │
+                  │  - executeNode()             │
+                  │  - findNextNodes()           │
+                  │  - detect parallel edges     │
+                  └───────────┬──────────────────┘
+                              │
+             per node         ▼
+                     ┌───────────────────────┐
+                     │     NodeExecutor      │
+                     │  - RUN_SCRIPT (K8s)   │
+                     │  - LOAD_SCRIPT        │
+                     │  - HTTP_CALL          │
+                     └──────────┬────────────┘
+                                │
+                   script job   │
+                                ▼
+                         ┌───────────┐
+                         │  K8s Job  │
+                         │+ status   │
+                         │+ logging  │
+                         └─────┬─────┘
+                               │
+              status/logs      ▼
+                       ┌──────────────┐
+                       │   Database    │
+                       │ exec + logs   │
+                       └──────────────┘
+
+
+⸻
+
+(A) Workflow Repository
+
+De plek waar jouw nodes/edges/schedule-config worden opgeslagen.
+
+Jij hebt al:
+	•	NodeEntity
+	•	EdgeEntity
+	•	WorkflowEntity
+
+Wat moet erbij (minimaal)?
+	1.	StartNodes → nodes zonder inkomende edges
+	2.	ParallelDetection → nodes met meerdere uitgaande edges
+	3.	ConditionType → ALL / ANY
+	4.	ScheduleConfig → cron + timezone + enabled-flag
+
+Je workflow opslaan triggert:
+
+Workflow saved -> Poller ziet: schedule.enabled == true
+               -> Registreert RecurringJob in JobRunr
+
+
+⸻
+
+(B) Workflow Poller
+
+Yes, je hebt gelijk: je moet een poller of event-based trigger hebben.
+
+Hoe werkt het?
+
+Elke keer dat een workflow wordt opgeslagen:
+	•	de scheduleConfig verandert eventueel
+	•	je wilt JobRunr registraties updaten
+	•	je wilt duplicates voorkomen
+
+Je maakt een simpele poller:
+
+@Scheduled(fixedDelay = 10000)
+public void syncSchedules() {
+    var workflows = repo.findAllWithSchedule();
+    for (WorkflowEntity wf : workflows) {
+        recurringJobManager.ensureRecurringJob(wf);
+    }
+}
+
+10 seconden polling is genoeg.
+
+⸻
+
+(C) Workflow Scheduler
+
+Deze start de workflow run:
+
+BackgroundJob.enqueue(() ->
+  handler.startWorkflow(workflowId, workflowExecId)
+);
+
+Meer niet — dit is correct.
+
+⸻
+
+(D) Workflow Execution Engine
+
+Hier begint de echte intelligentie.
+
+Dit gebeurt in BackgroundJobRequestHandler:
+
+startWorkflow() → bepaal startnodes
+executeNode()   → uitvoer
+nextNodes()     → edges interpreteren
+shouldTrigger() → ALL/ANY condition testen
+scheduleNode()  → JobRunr enqueue
+
+Parallel detectie is eigenlijk supereenvoudig:
+
+Node A ──▶ Node B
+      └─▶ Node C
+
+→ Node B en C worden allebei via enqueue uitgevoerd
+→ parallel scheduling komt je vanzelf toe door JobRunr workers.
+
+Join/merge nodes:
+
+B ─┐
+   ▼
+   D
+C ─┘
+
+Je doet:
+
+if (next.getExecutionCondition() == ALL) {
+    if (allPredecessorsCompleted(next, execId)) scheduleNode(next)
+}
+else scheduleNode(next)
+
+Meer is het niet.
+
+⸻
+Het pad is:
+	1.	Workflow wordt opgeslagen → poller ziet: “er zit een schedule in”
+	2.	Poller registreert JobRunr recurring job
+	3.	JobRunr triggert startWorkflow()
+	4.	startWorkflow() vindt startNodes()
+	5.	startWorkflow() plant elke startnode in
+	6.	executeNode():
+	•	voert uit via NodeExecutor → K8s
+	•	bij succes → zoekt edges → plant volgende nodes in
+	•	parallel paths worden vanzelf parallel dankzij multiple enqueues
+	7.	ALL/ANY gateways bepalen of een node mag starten
+	8.	Workflow klaar → exec-table wordt geüpdatet
+
+⸻
+Jij mag kiezen — ik ben er klaar voor.
