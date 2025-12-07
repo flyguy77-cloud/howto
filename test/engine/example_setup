@@ -1,0 +1,401 @@
+opdelen in:
+	1.	Hoe bepaal ik startnodes (manual vs schedule)?
+	2.	Hoe filter ik nodes & edges om:
+	•	volgorde te bepalen
+	•	sequentieel vs parallel te herkennen
+	•	joins (ALL/ANY) te herkennen
+	3.	Hoe ontwerp ik een poller die detecteert:
+	•	welke workflows een schedule hebben
+	•	welke recurring jobs in JobRunr gesynct moeten worden
+	4.	En dit alles in SR-methodes (Single Responsibility).
+
+Ik geef je hieronder:
+	•	een dun datamodel
+	•	een set utility-methodes (filters)
+	•	een execution helper voor ALL/ANY
+	•	een schedule poller structuur
+⸻
+
+0. Compact datamodel (uitgangspunt)
+
+public enum NodeKind {
+    START,
+    TASK,
+    GATEWAY
+}
+
+public enum StartMode {
+    MANUAL,
+    SCHEDULED
+}
+
+public enum ExecutionCondition {
+    ALL,    // AND-join
+    ANY     // OR-join
+}
+
+public enum NodeType {
+    RUN_SCRIPT,
+    LOAD_SCRIPT,
+    HTTP_CALL,
+    // …
+}
+
+public class NodeEntity {
+    private UUID id;
+    private NodeKind kind;
+    private StartMode startMode;            // alleen relevant bij START
+    private NodeType type;
+    private ExecutionCondition joinMode;    // alleen relevant bij join-nodes
+    // ... eventueel metadata
+}
+
+public class EdgeEntity {
+    private UUID id;
+    private UUID sourceNodeId;
+    private UUID targetNodeId;
+    // optioneel: condition (bv. expression)
+}
+
+public class WorkflowEntity {
+    private UUID id;
+    private List<NodeEntity> nodes;
+    private List<EdgeEntity> edges;
+
+    // getters…
+}
+
+
+⸻
+
+1. Filters om startnodes te vinden (manual vs schedule)
+
+1.1. Alle START-nodes met een bepaalde StartMode
+
+public final class WorkflowGraphUtils {
+
+    private WorkflowGraphUtils() {}
+
+    /**
+     * Vind alle expliciete START-nodes voor een gegeven modus
+     * (bijv. MANUAL of SCHEDULED).
+     */
+    public static List<NodeEntity> findStartNodes(WorkflowEntity wf, StartMode mode) {
+        return wf.getNodes().stream()
+                .filter(n -> n.getKind() == NodeKind.START)
+                .filter(n -> n.getStartMode() == mode)
+                .toList();
+    }
+}
+
+1.2. Fallback-startnodes: nodes zonder inkomende edges
+
+Handig als er geen expliciete START-node is.
+
+    /**
+     * Vind nodes zonder inkomende edges – impliciete startnodes.
+     */
+    public static List<NodeEntity> findNodesWithoutIncomingEdges(WorkflowEntity wf) {
+        Set<UUID> targets = wf.getEdges().stream()
+                .map(EdgeEntity::getTargetNodeId)
+                .collect(Collectors.toSet());
+
+        return wf.getNodes().stream()
+                .filter(n -> !targets.contains(n.getId()))
+                .toList();
+    }
+
+1.3. Publieke helper: geef startnodes voor MANUAL/SCHEDULED
+
+    public static List<NodeEntity> resolveStartNodes(WorkflowEntity wf, StartMode mode) {
+        List<NodeEntity> explicit = findStartNodes(wf, mode);
+        if (!explicit.isEmpty()) return explicit;
+
+        // fallback: nodes zonder inkomende edges
+        return findNodesWithoutIncomingEdges(wf);
+    }
+
+SR: elke methode doet één ding:
+	•	expliciete start → filter op kind + mode
+	•	impliciete start → filter op inkomende edges
+	•	resolve → combineert deze twee.
+
+⸻
+
+2. Filters voor sequentieel vs parallel (nodes & edges)
+
+2.1. Eenvoudige edge-helpers
+
+    /**
+     * Alle uitgaande edges van een node.
+     */
+    public static List<EdgeEntity> outgoingEdges(WorkflowEntity wf, UUID nodeId) {
+        return wf.getEdges().stream()
+                .filter(e -> e.getSourceNodeId().equals(nodeId))
+                .toList();
+    }
+
+    /**
+     * Alle inkomende edges van een node.
+     */
+    public static List<EdgeEntity> incomingEdges(WorkflowEntity wf, UUID nodeId) {
+        return wf.getEdges().stream()
+                .filter(e -> e.getTargetNodeId().equals(nodeId))
+                .toList();
+    }
+
+2.2. Bepalen welke nodes sequentieel vs parallel lopen
+
+Sequentieel: één uitgaande edge → precies één next node
+Parallel: meerdere uitgaande edges → meerdere next nodes → parallel inplannen
+
+    /**
+     * Direct volgende nodes (successors) van een node.
+     */
+    public static List<NodeEntity> nextNodes(WorkflowEntity wf, NodeEntity node) {
+        Set<UUID> nextIds = outgoingEdges(wf, node.getId()).stream()
+                .map(EdgeEntity::getTargetNodeId)
+                .collect(Collectors.toSet());
+
+        return wf.getNodes().stream()
+                .filter(n -> nextIds.contains(n.getId()))
+                .toList();
+    }
+
+    /**
+     * Is dit een split-node? (denkt: parallel mogelijke takken)
+     */
+    public static boolean isParallelSplit(WorkflowEntity wf, NodeEntity node) {
+        return outgoingEdges(wf, node.getId()).size() > 1;
+    }
+
+    /**
+     * Is dit een join-node? (meerdere inkomende paden)
+     */
+    public static boolean isJoinNode(WorkflowEntity wf, NodeEntity node) {
+        return incomingEdges(wf, node.getId()).size() > 1;
+    }
+
+Daarmee kun je in je orchestrator zeggen:
+
+List<NodeEntity> successors = WorkflowGraphUtils.nextNodes(wf, currentNode);
+
+if (successors.size() == 1) {
+    // sequentieel
+} else if (successors.size() > 1) {
+    // parallel: elke successor krijgt een eigen enqueue
+}
+
+
+⸻
+
+3. Filters voor ALL / ANY join (gateway-achtig gedrag)
+
+Je wilt per node kunnen bepalen:
+	•	Mag deze node nu starten?
+	•	Zijn ALLE predecessors klaar? (ALL)
+	•	Of is ÉÉN predecessor genoeg? (ANY)
+
+3.1. Predecessors ophalen
+
+    public static List<NodeEntity> predecessors(WorkflowEntity wf, NodeEntity node) {
+        Set<UUID> predIds = incomingEdges(wf, node.getId()).stream()
+                .map(EdgeEntity::getSourceNodeId)
+                .collect(Collectors.toSet());
+
+        return wf.getNodes().stream()
+                .filter(n -> predIds.contains(n.getId()))
+                .toList();
+    }
+
+3.2. ExecutionState helper voor uitgevoerde nodes
+
+Stel je hebt een tabel workflow_node_execution waarin per workflowExecId per nodeId de status staat.
+
+Een simpele service:
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowExecutionStateService {
+
+    private final WorkflowNodeExecutionRepository nodeExecRepo;
+
+    public boolean isNodeCompleted(UUID workflowExecId, UUID nodeId) {
+        return nodeExecRepo
+                .findByWorkflowExecIdAndNodeId(workflowExecId, nodeId)
+                .map(e -> e.getStatus().isFinal())  // bv. SUCCEEDED
+                .orElse(false);
+    }
+
+    public boolean areAllPredecessorsCompleted(WorkflowEntity wf,
+                                               NodeEntity node,
+                                               UUID execId) {
+        return WorkflowGraphUtils.predecessors(wf, node).stream()
+                .allMatch(pred -> isNodeCompleted(execId, pred.getId()));
+    }
+
+    public boolean isAnyPredecessorCompleted(WorkflowEntity wf,
+                                             NodeEntity node,
+                                             UUID execId) {
+        return WorkflowGraphUtils.predecessors(wf, node).stream()
+                .anyMatch(pred -> isNodeCompleted(execId, pred.getId()));
+    }
+}
+
+3.3. SR-methode om te bepalen of een node mag starten
+
+    public boolean mayStartNode(WorkflowEntity wf,
+                                NodeEntity node,
+                                UUID execId) {
+
+        ExecutionCondition cond = node.getJoinMode();
+        // default: ANY als er geen join is
+        if (!WorkflowGraphUtils.isJoinNode(wf, node)) return true;
+
+        return switch (cond) {
+            case ALL -> areAllPredecessorsCompleted(wf, node, execId);
+            case ANY -> isAnyPredecessorCompleted(wf, node, execId);
+        };
+    }
+
+SR:
+	•	predecessors() → pure graph logic
+	•	areAll…() / isAny…() → combineert graph + execution state
+	•	mayStartNode() → één beslissingspunt.
+
+⸻
+
+4. Detectie-poller voor schedules (SR opgezet)
+
+Uitgangspunt:
+	•	WorkflowEntity heeft ScheduleConfig zoals:
+	•	enabled
+	•	cronExpression
+	•	timezone
+	•	lastSyncedAt of iets dergelijks
+
+4.1. ScheduleConfig
+
+public class ScheduleConfig {
+    private boolean enabled;
+    private String cronExpression;
+    private String timeZoneId;
+
+    // b.v. voor detectie of we de recurring job moeten bijwerken
+    private Instant lastUpdatedAt;
+}
+
+4.2. Repository-filter voor workflows met schedule
+
+public interface WorkflowRepository extends JpaRepository<WorkflowEntity, UUID> {
+
+    @Query("select w from WorkflowEntity w " +
+           "where w.scheduleConfig.enabled = true")
+    List<WorkflowEntity> findAllWithEnabledSchedule();
+}
+
+4.3. SR: service die de JobRunr recurring jobs bijwerkt
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowScheduleSyncService {
+
+    private final WorkflowRepository wfRepo;
+
+    public List<WorkflowEntity> findWorkflowsWithSchedule() {
+        return wfRepo.findAllWithEnabledSchedule();
+    }
+
+    public void ensureRecurringJob(WorkflowEntity wf) {
+        String jobId = "workflow-" + wf.getId();
+
+        RecurringJob.addOrUpdate(
+                jobId,
+                () -> startScheduledWorkflow(wf.getId()),
+                wf.getScheduleConfig().getCronExpression()
+        );
+    }
+
+    // De entrypoint die JobRunr aanroept
+    public void startScheduledWorkflow(UUID workflowId) {
+        UUID execId = UUID.randomUUID();
+        // hier roep je jouw BackgroundJobRequestHandler.startWorkflow aan
+    }
+}
+
+4.4. De poller zelf (met @Scheduled) – SR: alleen orchestratie
+
+@Component
+@RequiredArgsConstructor
+public class WorkflowSchedulePoller {
+
+    private final WorkflowScheduleSyncService syncService;
+
+    @Scheduled(fixedDelayString = "${workflow.schedule.sync-interval:10000}")
+    public void syncSchedules() {
+        var workflows = syncService.findWorkflowsWithSchedule();
+        workflows.forEach(syncService::ensureRecurringJob);
+    }
+}
+
+SR per laag:
+	•	WorkflowSchedulePoller
+→ alleen periodiek aanroepen
+	•	WorkflowScheduleSyncService
+→ alleen bepalen welke workflows en welke JobRunr recurring jobs
+	•	BackgroundJobRequestHandler.startWorkflow(...)
+→ alleen uitvoeren van de workflow (nodes/edges)
+
+⸻
+
+5. Hoe de orchestrator dit samen gebruikt (schets)
+
+In jouw BackgroundJobRequestHandler.executeNode() zou je dus:
+
+public void executeNode(UUID wfId, UUID nodeId, UUID execId) {
+    WorkflowEntity wf = wfRepo.findById(wfId).orElseThrow();
+    NodeEntity node   = wf.findNode(nodeId);
+
+    // stap 1: uitvoeren
+    NodeResult result = nodeExecutor.execute(node, execId);
+
+    // stap 2: markeer node execution in DB
+
+    // stap 3: bepaal next nodes
+    List<NodeEntity> successors = WorkflowGraphUtils.nextNodes(wf, node);
+
+    // stap 4: per successor checken of 'ie mag starten
+    for (NodeEntity next : successors) {
+        if (executionStateService.mayStartNode(wf, next, execId)) {
+            scheduleNode(wfId, next.getId(), execId); // JobRunr enqueue
+        }
+    }
+}
+
+Hier komen al je filters samen:
+	•	nextNodes → graph
+	•	isJoinNode + ALL/ANY → gateway gedrag
+	•	isParallelSplit → meer context, maar voor JobRunr maakt het niet eens uit: meerdere enqueue = parallel.
+
+⸻
+
+Filters die je nodig hebt (met SR):
+	1.	Startnodes
+	  •	 findStartNodes(wf, StartMode)
+	  •	findNodesWithoutIncomingEdges(wf)
+	  •	resolveStartNodes(wf, StartMode)
+	2.	Sequentieel / parallel
+	  •	outgoingEdges(wf, nodeId)
+	  •	incomingEdges(wf, nodeId)
+	  •	nextNodes(wf, node)
+	  •	isParallelSplit(wf, node)
+	  •	isJoinNode(wf, node)
+	3.	Join condities (ALL/ANY)
+	  •	predecessors(wf, node)
+	  •	areAllPredecessorsCompleted(wf, node, execId)
+	  •	isAnyPredecessorCompleted(wf, node, execId)
+	  •	mayStartNode(wf, node, execId)
+	4.	Schedule detectie / poller
+	  •	WorkflowRepository.findAllWithEnabledSchedule()
+	  •	WorkflowScheduleSyncService.ensureRecurringJob(wf)
+	  • WorkflowSchedulePoller.syncSchedules()
