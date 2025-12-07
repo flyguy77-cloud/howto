@@ -1,12 +1,12 @@
 opdelen in:
 	1.	Hoe bepaal ik startnodes (manual vs schedule)?
 	2.	Hoe filter ik nodes & edges om:
-	•	volgorde te bepalen
-	•	sequentieel vs parallel te herkennen
-	•	joins (ALL/ANY) te herkennen
+		•	volgorde te bepalen
+		•	sequentieel vs parallel te herkennen
+		•	joins (ALL/ANY) te herkennen
 	3.	Hoe ontwerp ik een poller die detecteert:
-	•	welke workflows een schedule hebben
-	•	welke recurring jobs in JobRunr gesynct moeten worden
+		•	welke workflows een schedule hebben
+		•	welke recurring jobs in JobRunr gesynct moeten worden
 	4.	En dit alles in SR-methodes (Single Responsibility).
 
 Ik geef je hieronder:
