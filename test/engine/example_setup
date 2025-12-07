@@ -381,7 +381,7 @@ Hier komen al je filters samen:
 
 Filters die je nodig hebt (met SR):
 	1.	Startnodes
-	  •	 findStartNodes(wf, StartMode)
+	  •	findStartNodes(wf, StartMode)
 	  •	findNodesWithoutIncomingEdges(wf)
 	  •	resolveStartNodes(wf, StartMode)
 	2.	Sequentieel / parallel
