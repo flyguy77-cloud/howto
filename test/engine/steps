@@ -1,0 +1,296 @@
+Fase 1 – Workflow datamodel klaarzetten
+
+Stap 1.1 – Node & Edge uitbreiden
+
+Breid je bestaande workflow-model uit met minimaal:
+	•	NodeKind → START, TASK, GATEWAY
+	•	StartMode → MANUAL, SCHEDULED
+	•	NodeType → RUN_SCRIPT, LOAD_SCRIPT, etc.
+	•	ExecutionCondition → ALL, ANY (voor join-nodes)
+
+In NodeEntity komt dan bv.:
+	•	kind
+	•	startMode (alleen relevant als kind == START)
+	•	type
+	•	joinMode (alleen relevant bij join/merge)
+
+Stap 1.2 – WorkflowEntity helpers
+
+Maak in WorkflowEntity geen logica, maar gebruik straks een WorkflowGraphUtils helper.
+Zorg wel dat WorkflowEntity minimaal bevat:
+	•	List<NodeEntity> nodes
+	•	List<EdgeEntity> edges
+
+⸻
+
+Fase 2 – Graph & filter helpers (SR utilities)
+
+Maak een pure utility class: WorkflowGraphUtils.
+
+Stap 2.1 – Startnodes helpers
+	•	findStartNodes(wf, StartMode mode)
+	•	findNodesWithoutIncomingEdges(wf)
+	•	resolveStartNodes(wf, StartMode mode)
+
+Stap 2.2 – Volgorde & parallel helpers
+	•	outgoingEdges(wf, nodeId)
+	•	incomingEdges(wf, nodeId)
+	•	nextNodes(wf, node)
+	•	isParallelSplit(wf, node) → meerdere outgoing edges
+	•	isJoinNode(wf, node) → meerdere incoming edges
+
+Stap 2.3 – Predecessors helpers
+	•	predecessors(wf, node) → via incoming edges
+
+Deze klasse is 100% SR: alleen graph-logica, geen DB, geen JobRunr.
+
+⸻
+
+Fase 3 – Execution state model
+
+Je moet weten wat er al gedaan is per workflow-run.
+
+Stap 3.1 – Tabellen/entiteiten toevoegen
+	•	workflow_execution
+	•	id (UUID execId)
+	•	workflowId
+	•	status (RUNNING, SUCCEEDED, FAILED, CANCELLED)
+	•	timestamps
+	•	workflow_node_execution
+	•	id
+	•	workflowExecId
+	•	nodeId
+	•	status
+	•	evt. verwijzing naar job_execution (jouw K8s job-id)
+
+Stap 3.2 – Service om status op te vragen
+
+Maak WorkflowExecutionStateService met:
+	•	isNodeCompleted(execId, nodeId)
+	•	areAllPredecessorsCompleted(wf, node, execId)
+	•	isAnyPredecessorCompleted(wf, node, execId)
+	•	mayStartNode(wf, node, execId) → gebruikt ALL/ANY + join-detectie
+
+SR: deze service doet alleen “mag deze node nu starten?”.
+
+⸻
+
+Fase 4 – NodeExecutor als adapter naar jouw K8s executor
+
+Stap 4.1 – NodeExecutor maken
+
+Deze mapper doet:
+	•	NodeExecutor.execute(node, workflowExecId)
+	•	switch op node.getType()
+	•	bij RUN_SCRIPT → JobExecutionServiceImpl.execute(dto) aanroepen
+	•	resultaat teruggeven als NodeResult (bv. “jobId”, “success/fail”)
+
+SR: NodeExecutor weet hoe een node-type technisch wordt uitgevoerd, maar niets over workflow-structuur.
+
+
+Fase 1 – Workflow datamodel klaarzetten
+
+Stap 1.1 – Node & Edge uitbreiden
+
+Breid je bestaande workflow-model uit met minimaal:
+	•	NodeKind → START, TASK, GATEWAY
+	•	StartMode → MANUAL, SCHEDULED
+	•	NodeType → RUN_SCRIPT, LOAD_SCRIPT, etc.
+	•	ExecutionCondition → ALL, ANY (voor join-nodes)
+
+In NodeEntity komt dan bv.:
+	•	kind
+	•	startMode (alleen relevant als kind == START)
+	•	type
+	•	joinMode (alleen relevant bij join/merge)
+
+Stap 1.2 – WorkflowEntity helpers
+
+Maak in WorkflowEntity geen logica, maar gebruik straks een WorkflowGraphUtils helper.
+Zorg wel dat WorkflowEntity minimaal bevat:
+	•	List<NodeEntity> nodes
+	•	List<EdgeEntity> edges
+
+⸻
+
+Fase 2 – Graph & filter helpers (SR utilities)
+
+Maak een pure utility class: WorkflowGraphUtils.
+
+Stap 2.1 – Startnodes helpers
+	•	findStartNodes(wf, StartMode mode)
+	•	findNodesWithoutIncomingEdges(wf)
+	•	resolveStartNodes(wf, StartMode mode)
+
+Stap 2.2 – Volgorde & parallel helpers
+	•	outgoingEdges(wf, nodeId)
+	•	incomingEdges(wf, nodeId)
+	•	nextNodes(wf, node)
+	•	isParallelSplit(wf, node) → meerdere outgoing edges
+	•	isJoinNode(wf, node) → meerdere incoming edges
+
+Stap 2.3 – Predecessors helpers
+	•	predecessors(wf, node) → via incoming edges
+
+Deze klasse is 100% SR: alleen graph-logica, geen DB, geen JobRunr.
+
+⸻
+
+Fase 3 – Execution state model
+
+Je moet weten wat er al gedaan is per workflow-run.
+
+Stap 3.1 – Tabellen/entiteiten toevoegen
+	•	workflow_execution
+	•	id (UUID execId)
+	•	workflowId
+	•	status (RUNNING, SUCCEEDED, FAILED, CANCELLED)
+	•	timestamps
+	•	workflow_node_execution
+	•	id
+	•	workflowExecId
+	•	nodeId
+	•	status
+	•	evt. verwijzing naar job_execution (jouw K8s job-id)
+
+Stap 3.2 – Service om status op te vragen
+
+Maak WorkflowExecutionStateService met:
+	•	isNodeCompleted(execId, nodeId)
+	•	areAllPredecessorsCompleted(wf, node, execId)
+	•	isAnyPredecessorCompleted(wf, node, execId)
+	•	mayStartNode(wf, node, execId) → gebruikt ALL/ANY + join-detectie
+
+SR: deze service doet alleen “mag deze node nu starten?”.
+
+⸻
+
+Fase 4 – NodeExecutor als adapter naar jouw K8s executor
+
+Stap 4.1 – NodeExecutor maken
+
+Deze mapper doet:
+	•	NodeExecutor.execute(node, workflowExecId)
+	•	switch op node.getType()
+	•	bij RUN_SCRIPT → JobExecutionServiceImpl.execute(dto) aanroepen
+	•	resultaat teruggeven als NodeResult (bv. “jobId”, “success/fail”)
+
+SR: NodeExecutor weet hoe een node-type technisch wordt uitgevoerd, maar niets over workflow-structuur.
+
+Fase 5 – BackgroundJobRequestHandler (workflow-engine op JobRunr)
+
+Dit is de kern van je workflow-engine.
+
+Stap 5.1 – startWorkflow
+
+public void startWorkflow(UUID workflowId, UUID execId, StartMode mode) {
+    WorkflowEntity wf = wfRepo.findById(workflowId).orElseThrow();
+    List<NodeEntity> startNodes = WorkflowGraphUtils.resolveStartNodes(wf, mode);
+
+    // nieuwe workflow_execution row aanmaken: status RUNNING
+
+    for (NodeEntity n : startNodes) {
+        scheduleNode(wf.getId(), n.getId(), execId);
+    }
+}
+
+Stap 5.2 – scheduleNode
+
+Enqueued een node-uitvoering via JobRunr:
+private void scheduleNode(UUID wfId, UUID nodeId, UUID execId) {
+    BackgroundJob.enqueue(() ->
+        executeNode(wfId, nodeId, execId)
+    );
+}
+
+Stap 5.3 – executeNode
+	1.	Node & workflow ophalen
+	2.	Check evt. of workflow CANCELLED is
+	3.	Node uitvoeren via NodeExecutor
+	4.	workflow_node_execution updaten
+	5.	nextNodes bepalen via WorkflowGraphUtils
+	6.	Voor elke successor:
+	•	if (executionStateService.mayStartNode(...)) → scheduleNode(...)
+
+SR: deze handler is alleen taak: “geef workflowId + nodeId + execId → zorg dat dit stukje van de graph wordt uitgevoerd”.
+
+⸻
+
+Fase 6 – WorkflowSchedulerService (entrypoint voor start)
+
+Stap 6.1 – Manual start
+
+Controller roept:
+UUID execId = workflowSchedulerService.startManual(workflowId);
+
+Service:
+public UUID startManual(UUID workflowId) {
+    UUID execId = UUID.randomUUID();
+    BackgroundJob.enqueue(() -> 
+        handler.startWorkflow(workflowId, execId, StartMode.MANUAL)
+    );
+    return execId;
+}
+SR: alleen execId genereren + JobRunr job aanmaken.
+
+Fase 7 – Schedule/detectie-poller
+
+Stap 7.1 – WorkflowScheduleSyncService
+	•	findWorkflowsWithSchedule() → repo-filter
+	•	ensureRecurringJob(wf) → RecurringJob.addOrUpdate(...)
+	•	startScheduledWorkflow(workflowId) → zelfde truc als startManual, maar met StartMode.SCHEDULED
+
+Stap 7.2 – Poller
+
+Eenvoudige Spring @Scheduled component:
+
+@Scheduled(fixedDelayString = "${workflow.schedule.sync-interval:10000}")
+public void syncSchedules() {
+    var workflows = syncService.findWorkflowsWithSchedule();
+    workflows.forEach(syncService::ensureRecurringJob);
+}
+
+SR: poller doet alleen: “roepen we de ScheduleSyncService periodiek aan”.
+
+Fase 8 – Stoppen / cancel van een workflow
+
+Stap 8.1 – Cancel endpoint
+
+Bijv.:
+@PostMapping("/workflows/executions/{execId}/cancel")
+public void cancel(@PathVariable UUID execId) {
+    workflowControlService.cancel(execId);
+}
+
+Stap 8.2 – WorkflowControlService
+	•	Markeer workflow_execution.status = CANCELLED
+	•	Stop eventueel actieve K8s jobs (via label workflowExecId of mapping)
+	•	Optioneel: JobRunr jobs taggen en via JobRunr API cancellen
+
+Stap 8.3 – Respecteer CANCELLED in executeNode
+
+In executeNode:
+	•	eerste stap: check workflow_execution.status
+	•	als CANCELLED → niks meer doen, direct return
+
+Dit zorgt ervoor dat reeds ingeplande JobRunr-taken “zacht” stoppen.
+
+⸻
+
+Fase 9 – REST API afmaken
+	•	POST /workflows/{id}/run → startManual
+	•	GET /workflows/executions/{execId}/status → opvragen
+	•	GET /workflows/executions/{execId}/nodes → per node status/logs
+	•	POST /workflows/executions/{execId}/cancel → cancel
+
+⸻
+
+Fase 10 – Testen
+	•	Unit tests voor:
+	•	WorkflowGraphUtils
+	•	WorkflowExecutionStateService.mayStartNode
+	•	BackgroundJobRequestHandler.executeNode (met mocks)
+	•	Integratietest:
+	•	Kleine demo-workflow A → B + C → D
+	•	Check dat B & C parallel gaan
+	•	Check dat D pas start als B & C klaar zijn (ALL)
