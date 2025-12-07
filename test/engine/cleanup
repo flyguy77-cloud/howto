@@ -1,0 +1,172 @@
+application.yaml:
+
+jobrunr:
+  background-job-server:
+    enabled: true
+    worker-count: 4  # of auto
+
+  dashboard:
+    enabled: true
+
+  jobs:
+    delete-succeeded-jobs: true
+    delete-deleted-jobs: true
+    delete-irrecoverable-jobs: true
+    default-clean-up-duration: PT48H   # verwijder jobs ouder dan 48 uur
+
+-----
+
+2. Jouw app cleanup (workflow, nodes, logs, pods, jobs)
+
+Hieronder schrijf ik alles opnieuw, simpel en strak.
+Deze services zijn volledig onafhankelijk van JobRunr cleanup.
+
+⸻
+
+WorkflowCleanupService
+
+Opruimen van:
+	•	Oude workflow-executies
+	•	Stuck nodes
+	•	Oude logs
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowCleanupService {
+
+    private final WorkflowExecutionRepository executionRepo;
+    private final WorkflowNodeExecutionRepository nodeExecRepo;
+    private final JobExecutionLogRepository logRepo;
+    private final JobExecutionRepository jobExecRepo;
+
+    private static final Duration MAX_AGE = Duration.ofDays(7);
+    private static final Duration STUCK_NODE_AGE = Duration.ofHours(24);
+
+    public void cleanupOldExecutions() {
+        Instant cutoff = Instant.now().minus(MAX_AGE);
+
+        var oldExecutions = executionRepo.findFinishedBefore(cutoff);
+
+        for (var exec : oldExecutions) {
+            nodeExecRepo.deleteByWorkflowExecId(exec.getId());
+            jobExecRepo.deleteByWorkflowExecId(exec.getId());
+            executionRepo.delete(exec);
+        }
+    }
+
+    public void cleanupStuckNodes() {
+        Instant cutoff = Instant.now().minus(STUCK_NODE_AGE);
+
+        var stuckNodes = nodeExecRepo.findRunningOlderThan(cutoff);
+
+        for (var node : stuckNodes) {
+            node.setStatus(NodeExecutionStatus.FAILED);
+            node.setMessage("Auto-failed (stuck node)");
+            nodeExecRepo.save(node);
+        }
+    }
+
+    public void cleanupOldLogs() {
+        Instant cutoff = Instant.now().minus(MAX_AGE);
+        logRepo.deleteOlderThan(cutoff);
+    }
+}
+
+
+⸻
+
+KubernetesCleanupService
+
+Schoont:
+	•	orphaned K8s jobs
+	•	pods in Failed/Succeeded langer dan X uur
+
+@Service
+@RequiredArgsConstructor
+public class KubernetesCleanupService {
+
+    private final KubernetesClient client;
+    private final WorkflowExecutionRepository executionRepo;
+
+    private static final Duration POD_MAX_AGE = Duration.ofHours(12);
+
+    public void cleanupOrphanedJobs() {
+        var jobs = client.batch().v1().jobs().list().getItems();
+
+        for (var job : jobs) {
+            String wfExecId = job.getMetadata().getLabels().get("workflowExecId");
+
+            if (wfExecId == null) continue;
+
+            if (!executionRepo.existsById(UUID.fromString(wfExecId))) {
+                client.batch().v1().jobs().withName(job.getMetadata().getName()).delete();
+            }
+        }
+    }
+
+    public void cleanupOldPods() {
+        var pods = client.pods().list().getItems();
+
+        for (var pod : pods) {
+            var phase = pod.getStatus().getPhase();
+            if (!("Succeeded".equals(phase) || "Failed".equals(phase))) continue;
+
+            Instant started = Instant.parse(pod.getStatus().getStartTime());
+
+            if (started.plus(POD_MAX_AGE).isBefore(Instant.now())) {
+                client.pods().withName(pod.getMetadata().getName()).delete();
+            }
+        }
+    }
+}
+
+
+⸻
+
+JobRunrCleanupService (optioneel vanwege YAML)
+
+Dit kun je overslaan als je application.yaml al goed hebt ingesteld.
+Maar wil je harder opruimen, dan:
+
+@Service
+public class JobRunrCleanupService {
+
+    public void cleanupSucceededJobs() {
+        JobRunrDashboardWebServer.getJobScheduler()
+                .deleteSucceededJobsOlderThan(Duration.ofHours(48));
+    }
+
+    public void cleanupFailedJobs() {
+        JobRunrDashboardWebServer.getJobScheduler()
+                .deleteFailedJobsOlderThan(Duration.ofDays(7));
+    }
+}
+
+
+⸻
+
+WorkflowMaintenanceService (1 entrypoint via @Recurring)
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowMaintenanceService {
+
+    private final WorkflowCleanupService workflowCleanup;
+    private final KubernetesCleanupService k8sCleanup;
+    private final JobRunrCleanupService jobrunrCleanup;
+
+    @Recurring(id = "workflow-maintenance", cron = "0 0 * * *") // ieder uur
+    public void maintenance() {
+
+        workflowCleanup.cleanupOldExecutions();
+        workflowCleanup.cleanupStuckNodes();
+        workflowCleanup.cleanupOldLogs();
+
+        k8sCleanup.cleanupOrphanedJobs();
+        k8sCleanup.cleanupOldPods();
+
+        jobrunrCleanup.cleanupSucceededJobs();
+        jobrunrCleanup.cleanupFailedJobs();
+    }
+}
+
