@@ -1,0 +1,788 @@
+nl.yourcompany.workflow
+├─ model
+│  ├─ enums
+│  │   ├─ NodeKind.java
+│  │   ├─ StartMode.java
+│  │   ├─ ExecutionCondition.java
+│  │   ├─ NodeType.java
+│  │   └─ WorkflowStatus.java
+│  └─ entity
+│      ├─ WorkflowEntity.java
+│      ├─ WorkflowNodeEntity.java
+│      ├─ WorkflowEdgeEntity.java
+│      └─ WorkflowExecutionEntity.java
+├─ repository
+│  ├─ WorkflowRepository.java
+│  ├─ WorkflowNodeRepository.java
+│  ├─ WorkflowEdgeRepository.java
+│  └─ WorkflowExecutionRepository.java
+├─ graph
+│  ├─ GraphModel.java
+│  └─ GraphBuilder.java
+├─ service
+│  ├─ JobExecutionService.java        // interface: jouw bestaande K8s executor erachter
+│  ├─ WorkflowRunner.java
+│  ├─ WorkflowExecutionService.java
+│  └─ WorkflowSchedulerService.java
+└─ util
+   └─ IdUtil.java
+
+
+⸻
+
+Enums
+
+NodeKind.java
+
+package nl.yourcompany.workflow.model.enums;
+
+public enum NodeKind {
+    START,
+    TASK,
+    GATEWAY
+}
+
+StartMode.java
+
+package nl.yourcompany.workflow.model.enums;
+
+public enum StartMode {
+    MANUAL,
+    SCHEDULED
+}
+
+ExecutionCondition.java
+
+package nl.yourcompany.workflow.model.enums;
+
+public enum ExecutionCondition {
+    ALL,    // AND-join
+    ANY     // OR-join
+}
+
+NodeType.java
+
+package nl.yourcompany.workflow.model.enums;
+
+public enum NodeType {
+    RUN_SCRIPT,
+    LOAD_SCRIPT,
+    HTTP_CALL
+    // later uit te breiden
+}
+
+WorkflowStatus.java
+
+package nl.yourcompany.workflow.model.enums;
+
+public enum WorkflowStatus {
+    PENDING,
+    RUNNING,
+    SUCCEEDED,
+    FAILED
+}
+
+
+⸻
+
+Entities (met UUID PK + functionele nodeId/edgeId)
+
+WorkflowEntity.java
+
+package nl.yourcompany.workflow.model.entity;
+
+import jakarta.persistence.*;
+import nl.yourcompany.workflow.model.enums.StartMode;
+
+import java.util.UUID;
+
+@Entity
+@Table(name = "workflow")
+public class WorkflowEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    private String name;
+
+    @Enumerated(EnumType.STRING)
+    private StartMode startMode = StartMode.MANUAL;
+
+    private String cronExpression; // alleen relevant bij SCHEDULED
+
+    // getters/setters
+
+    public UUID getId() {
+        return id;
+    }
+
+    public void setId(UUID id) { this.id = id; }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) { this.name = name; }
+
+    public StartMode getStartMode() {
+        return startMode;
+    }
+
+    public void setStartMode(StartMode startMode) {
+        this.startMode = startMode;
+    }
+
+    public String getCronExpression() {
+        return cronExpression;
+    }
+
+    public void setCronExpression(String cronExpression) {
+        this.cronExpression = cronExpression;
+    }
+}
+
+
+⸻
+
+WorkflowNodeEntity.java
+
+package nl.yourcompany.workflow.model.entity;
+
+import jakarta.persistence.*;
+import nl.yourcompany.workflow.model.enums.ExecutionCondition;
+import nl.yourcompany.workflow.model.enums.NodeKind;
+import nl.yourcompany.workflow.model.enums.NodeType;
+
+import java.util.UUID;
+
+@Entity
+@Table(name = "workflow_node")
+public class WorkflowNodeEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id; // DB PK
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "workflow_id", nullable = false)
+    private WorkflowEntity workflow;
+
+    @Column(name = "node_id", nullable = false)
+    private String nodeId; // functionele id, bv "node_run_script_abc123"
+
+    @Enumerated(EnumType.STRING)
+    private NodeKind kind; // START, TASK, GATEWAY
+
+    @Enumerated(EnumType.STRING)
+    private NodeType type; // alleen relevant bij TASK
+
+    @Enumerated(EnumType.STRING)
+    private ExecutionCondition joinMode; // relevant bij GATEWAY / join
+
+    @Column(columnDefinition = "TEXT")
+    private String metadataJson; // scriptPath, params, etc.
+
+    // getters/setters
+
+    public UUID getId() {
+        return id;
+    }
+
+    public void setId(UUID id) { this.id = id; }
+
+    public WorkflowEntity getWorkflow() {
+        return workflow;
+    }
+
+    public void setWorkflow(WorkflowEntity workflow) {
+        this.workflow = workflow;
+    }
+
+    public String getNodeId() {
+        return nodeId;
+    }
+
+    public void setNodeId(String nodeId) {
+        this.nodeId = nodeId;
+    }
+
+    public NodeKind getKind() {
+        return kind;
+    }
+
+    public void setKind(NodeKind kind) {
+        this.kind = kind;
+    }
+
+    public NodeType getType() {
+        return type;
+    }
+
+    public void setType(NodeType type) {
+        this.type = type;
+    }
+
+    public ExecutionCondition getJoinMode() {
+        return joinMode;
+    }
+
+    public void setJoinMode(ExecutionCondition joinMode) {
+        this.joinMode = joinMode;
+    }
+
+    public String getMetadataJson() {
+        return metadataJson;
+    }
+
+    public void setMetadataJson(String metadataJson) {
+        this.metadataJson = metadataJson;
+    }
+}
+
+
+⸻
+
+WorkflowEdgeEntity.java
+
+package nl.yourcompany.workflow.model.entity;
+
+import jakarta.persistence.*;
+
+import java.util.UUID;
+
+@Entity
+@Table(name = "workflow_edge")
+public class WorkflowEdgeEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "workflow_id", nullable = false)
+    private WorkflowEntity workflow;
+
+    @Column(name = "edge_id", nullable = false)
+    private String edgeId; // functionele edge id, bv "edge_start_to_run_abc123"
+
+    @Column(name = "from_node_id", nullable = false)
+    private String fromNodeId; // functionele id, niet de UUID PK
+
+    @Column(name = "to_node_id", nullable = false)
+    private String toNodeId;
+
+    // getters/setters
+
+    public UUID getId() {
+        return id;
+    }
+
+    public void setId(UUID id) { this.id = id; }
+
+    public WorkflowEntity getWorkflow() {
+        return workflow;
+    }
+
+    public void setWorkflow(WorkflowEntity workflow) {
+        this.workflow = workflow;
+    }
+
+    public String getEdgeId() {
+        return edgeId;
+    }
+
+    public void setEdgeId(String edgeId) {
+        this.edgeId = edgeId;
+    }
+
+    public String getFromNodeId() {
+        return fromNodeId;
+    }
+
+    public void setFromNodeId(String fromNodeId) {
+        this.fromNodeId = fromNodeId;
+    }
+
+    public String getToNodeId() {
+        return toNodeId;
+    }
+
+    public void setToNodeId(String toNodeId) {
+        this.toNodeId = toNodeId;
+    }
+}
+
+
+⸻
+
+WorkflowExecutionEntity.java
+
+package nl.yourcompany.workflow.model.entity;
+
+import jakarta.persistence.*;
+import nl.yourcompany.workflow.model.enums.WorkflowStatus;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@Entity
+@Table(name = "workflow_execution")
+public class WorkflowExecutionEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "workflow_id", nullable = false)
+    private WorkflowEntity workflow;
+
+    @Enumerated(EnumType.STRING)
+    private WorkflowStatus status;
+
+    private Instant startedAt;
+    private Instant finishedAt;
+
+    // getters/setters
+
+    public UUID getId() {
+        return id;
+    }
+
+    public void setId(UUID id) { this.id = id; }
+
+    public WorkflowEntity getWorkflow() {
+        return workflow;
+    }
+
+    public void setWorkflow(WorkflowEntity workflow) {
+        this.workflow = workflow;
+    }
+
+    public WorkflowStatus getStatus() {
+        return status;
+    }
+
+    public void setStatus(WorkflowStatus status) {
+        this.status = status;
+    }
+
+    public Instant getStartedAt() {
+        return startedAt;
+    }
+
+    public void setStartedAt(Instant startedAt) {
+        this.startedAt = startedAt;
+    }
+
+    public Instant getFinishedAt() {
+        return finishedAt;
+    }
+
+    public void setFinishedAt(Instant finishedAt) {
+        this.finishedAt = finishedAt;
+    }
+}
+
+
+⸻
+
+3️⃣ Repositories
+
+package nl.yourcompany.workflow.repository;
+
+import nl.yourcompany.workflow.model.entity.WorkflowEntity;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.UUID;
+
+public interface WorkflowRepository extends JpaRepository<WorkflowEntity, UUID> {
+}
+
+package nl.yourcompany.workflow.repository;
+
+import nl.yourcompany.workflow.model.entity.WorkflowNodeEntity;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+public interface WorkflowNodeRepository extends JpaRepository<WorkflowNodeEntity, UUID> {
+
+    List<WorkflowNodeEntity> findByWorkflowId(UUID workflowId);
+
+    Optional<WorkflowNodeEntity> findByWorkflowIdAndNodeId(UUID workflowId, String nodeId);
+}
+
+package nl.yourcompany.workflow.repository;
+
+import nl.yourcompany.workflow.model.entity.WorkflowEdgeEntity;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+import java.util.UUID;
+
+public interface WorkflowEdgeRepository extends JpaRepository<WorkflowEdgeEntity, UUID> {
+
+    List<WorkflowEdgeEntity> findByWorkflowId(UUID workflowId);
+}
+
+package nl.yourcompany.workflow.repository;
+
+import nl.yourcompany.workflow.model.entity.WorkflowExecutionEntity;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.UUID;
+
+public interface WorkflowExecutionRepository extends JpaRepository<WorkflowExecutionEntity, UUID> {
+}
+
+
+⸻
+
+GraphModel + GraphBuilder (future-proof, MVP-simple)
+
+GraphModel.java
+
+package nl.yourcompany.workflow.graph;
+
+import nl.yourcompany.workflow.model.entity.WorkflowNodeEntity;
+import nl.yourcompany.workflow.model.enums.NodeKind;
+
+import java.util.List;
+import java.util.Map;
+
+public record GraphModel(
+        Map<String, WorkflowNodeEntity> nodes,
+        Map<String, List<String>> outgoing,
+        Map<String, List<String>> incoming
+) {
+
+    public WorkflowNodeEntity getNode(String nodeId) {
+        return nodes.get(nodeId);
+    }
+
+    public List<String> next(String nodeId) {
+        return outgoing.getOrDefault(nodeId, List.of());
+    }
+
+    public List<String> previous(String nodeId) {
+        return incoming.getOrDefault(nodeId, List.of());
+    }
+
+    public WorkflowNodeEntity findStartNode() {
+        return nodes.values().stream()
+                .filter(n -> n.getKind() == NodeKind.START)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("No START node found"));
+    }
+}
+
+
+⸻
+
+GraphBuilder.java
+
+package nl.yourcompany.workflow.graph;
+
+import nl.yourcompany.workflow.model.entity.WorkflowEdgeEntity;
+import nl.yourcompany.workflow.model.entity.WorkflowNodeEntity;
+import nl.yourcompany.workflow.repository.WorkflowEdgeRepository;
+import nl.yourcompany.workflow.repository.WorkflowNodeRepository;
+import org.springframework.stereotype.Service;
+
+import java.util.*;
+
+@Service
+public class GraphBuilder {
+
+    private final WorkflowNodeRepository nodeRepo;
+    private final WorkflowEdgeRepository edgeRepo;
+
+    public GraphBuilder(WorkflowNodeRepository nodeRepo, WorkflowEdgeRepository edgeRepo) {
+        this.nodeRepo = nodeRepo;
+        this.edgeRepo = edgeRepo;
+    }
+
+    public GraphModel buildGraph(UUID workflowId) {
+
+        List<WorkflowNodeEntity> nodes = nodeRepo.findByWorkflowId(workflowId);
+        List<WorkflowEdgeEntity> edges = edgeRepo.findByWorkflowId(workflowId);
+
+        Map<String, WorkflowNodeEntity> nodeMap = new HashMap<>();
+        Map<String, List<String>> outgoing = new HashMap<>();
+        Map<String, List<String>> incoming = new HashMap<>();
+
+        for (WorkflowNodeEntity n : nodes) {
+            nodeMap.put(n.getNodeId(), n);
+        }
+
+        for (WorkflowEdgeEntity e : edges) {
+            outgoing.computeIfAbsent(e.getFromNodeId(), k -> new ArrayList<>())
+                    .add(e.getToNodeId());
+            incoming.computeIfAbsent(e.getToNodeId(), k -> new ArrayList<>())
+                    .add(e.getFromNodeId());
+        }
+
+        return new GraphModel(nodeMap, outgoing, incoming);
+    }
+}
+
+
+⸻
+
+JobExecutionService – adapter naar jouw bestaande K8s executor
+
+Dit is de interface waar jouw bestaande K8s + watchers implementatie achter kan hangen.
+
+package nl.yourcompany.workflow.service;
+
+import nl.yourcompany.workflow.model.entity.WorkflowNodeEntity;
+
+import java.util.UUID;
+
+public interface JobExecutionService {
+
+    /**
+     * Start de technische job voor deze node (bv. K8s Job).
+     * Returned een jobExecutionId die je in je job_execution tabel opslaat.
+     */
+    UUID startJobForNode(WorkflowNodeEntity node, UUID workflowExecId);
+
+    /**
+     * Blokkerend wachten tot de job klaar is (MVP: simpel pollend; jouw implementatie bepaalt).
+     */
+    void waitForCompletion(UUID jobExecutionId);
+
+    /**
+     * Check of de job succesvol was.
+     */
+    boolean isSuccessful(UUID jobExecutionId);
+}
+
+Jouw bestaande JobExecutionServiceImpl (die nu K8s Jobs maakt + watchers) kun je hierachter hangen door deze interface te implementeren.
+
+⸻
+
+WorkflowRunner – sequentieel, maar graph-based
+
+package nl.yourcompany.workflow.service;
+
+import nl.yourcompany.workflow.graph.GraphBuilder;
+import nl.yourcompany.workflow.graph.GraphModel;
+import nl.yourcompany.workflow.model.entity.WorkflowExecutionEntity;
+import nl.yourcompany.workflow.model.entity.WorkflowNodeEntity;
+import nl.yourcompany.workflow.model.enums.NodeKind;
+import nl.yourcompany.workflow.model.enums.NodeType;
+import nl.yourcompany.workflow.model.enums.WorkflowStatus;
+import nl.yourcompany.workflow.repository.WorkflowExecutionRepository;
+import org.springframework.stereotype.Service;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
+
+@Service
+public class WorkflowRunner {
+
+    private final GraphBuilder graphBuilder;
+    private final WorkflowExecutionRepository execRepo;
+    private final JobExecutionService jobExecutionService;
+
+    public WorkflowRunner(GraphBuilder graphBuilder,
+                          WorkflowExecutionRepository execRepo,
+                          JobExecutionService jobExecutionService) {
+        this.graphBuilder = graphBuilder;
+        this.execRepo = execRepo;
+        this.jobExecutionService = jobExecutionService;
+    }
+
+    public void runWorkflow(UUID workflowId, UUID execId) {
+
+        WorkflowExecutionEntity exec = execRepo.findById(execId)
+                .orElseThrow(() -> new IllegalStateException("WorkflowExecution not found"));
+
+        exec.setStatus(WorkflowStatus.RUNNING);
+        exec.setStartedAt(Instant.now());
+        execRepo.save(exec);
+
+        GraphModel graph = graphBuilder.buildGraph(workflowId);
+
+        WorkflowNodeEntity current = graph.findStartNode();
+
+        while (current != null) {
+
+            if (current.getKind() == NodeKind.TASK) {
+                executeTaskNode(current, exec.getId());
+            }
+
+            // voor MVP: neem EERSTE outgoing edge → sequentieel pad
+            List<String> nextIds = graph.next(current.getNodeId());
+            if (nextIds.isEmpty()) {
+                break; // einde workflow
+            }
+
+            String nextNodeId = nextIds.get(0);
+            current = graph.getNode(nextNodeId);
+        }
+
+        exec.setStatus(WorkflowStatus.SUCCEEDED);
+        exec.setFinishedAt(Instant.now());
+        execRepo.save(exec);
+    }
+
+    private void executeTaskNode(WorkflowNodeEntity node, UUID workflowExecId) {
+
+        NodeType type = node.getType();
+        if (type == null) {
+            return; // of exception, afhankelijk van je strictness
+        }
+
+        switch (type) {
+
+            case LOAD_SCRIPT -> {
+                // TODO: parse node.getMetadataJson() voor script path etc.
+                // Voor MVP zou je hier je GitLab loader kunnen koppelen
+            }
+
+            case RUN_SCRIPT -> {
+                UUID jobExecId = jobExecutionService.startJobForNode(node, workflowExecId);
+
+                jobExecutionService.waitForCompletion(jobExecId);
+
+                if (!jobExecutionService.isSuccessful(jobExecId)) {
+                    // markeer workflow als failed en stop
+                    WorkflowExecutionEntity exec = execRepo.findById(workflowExecId)
+                            .orElseThrow();
+                    exec.setStatus(WorkflowStatus.FAILED);
+                    exec.setFinishedAt(Instant.now());
+                    execRepo.save(exec);
+                    throw new IllegalStateException(
+                            "Job for node " + node.getNodeId() + " failed"
+                    );
+                }
+            }
+
+            default -> {
+                // later: HTTP_CALL etc.
+                throw new UnsupportedOperationException(
+                        "Unsupported node type: " + type
+                );
+            }
+        }
+    }
+}
+
+
+⸻
+
+WorkflowExecutionService + WorkflowSchedulerService met JobRunr
+
+WorkflowExecutionService.java
+
+package nl.yourcompany.workflow.service;
+
+import nl.yourcompany.workflow.model.entity.WorkflowEntity;
+import nl.yourcompany.workflow.model.entity.WorkflowExecutionEntity;
+import nl.yourcompany.workflow.model.enums.WorkflowStatus;
+import nl.yourcompany.workflow.repository.WorkflowExecutionRepository;
+import nl.yourcompany.workflow.repository.WorkflowRepository;
+import org.jobrunr.scheduling.BackgroundJob;
+import org.springframework.stereotype.Service;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@Service
+public class WorkflowExecutionService {
+
+    private final WorkflowRepository workflowRepo;
+    private final WorkflowExecutionRepository execRepo;
+    private final WorkflowRunner runner;
+
+    public WorkflowExecutionService(WorkflowRepository workflowRepo,
+                                    WorkflowExecutionRepository execRepo,
+                                    WorkflowRunner runner) {
+        this.workflowRepo = workflowRepo;
+        this.execRepo = execRepo;
+        this.runner = runner;
+    }
+
+    public UUID startExecution(UUID workflowId) {
+
+        WorkflowEntity wf = workflowRepo.findById(workflowId)
+                .orElseThrow(() -> new IllegalStateException("Workflow not found"));
+
+        WorkflowExecutionEntity exec = new WorkflowExecutionEntity();
+        exec.setWorkflow(wf);
+        exec.setStatus(WorkflowStatus.PENDING);
+        exec.setStartedAt(Instant.now());
+        execRepo.save(exec);
+
+        UUID execId = exec.getId();
+
+        // Asynchrone uitvoering via JobRunr
+        BackgroundJob.enqueue(() ->
+                runner.runWorkflow(workflowId, execId)
+        );
+
+        return execId;
+    }
+}
+
+
+⸻
+
+WorkflowSchedulerService.java (optioneel voor later scheduling)
+
+package nl.yourcompany.workflow.service;
+
+import nl.yourcompany.workflow.model.entity.WorkflowEntity;
+import nl.yourcompany.workflow.model.enums.StartMode;
+import nl.yourcompany.workflow.repository.WorkflowRepository;
+import org.jobrunr.scheduling.JobScheduler;
+import org.jobrunr.scheduling.RecurringJob;
+import org.springframework.stereotype.Service;
+
+import java.util.UUID;
+
+@Service
+public class WorkflowSchedulerService {
+
+    private final WorkflowRepository workflowRepo;
+    private final WorkflowExecutionService executionService;
+    private final JobScheduler jobScheduler; // geinjecteerd door JobRunr starter
+
+    public WorkflowSchedulerService(WorkflowRepository workflowRepo,
+                                    WorkflowExecutionService executionService,
+                                    JobScheduler jobScheduler) {
+        this.workflowRepo = workflowRepo;
+        this.executionService = executionService;
+        this.jobScheduler = jobScheduler;
+    }
+
+    public UUID startManual(UUID workflowId) {
+        return executionService.startExecution(workflowId);
+    }
+
+    public void ensureScheduled(UUID workflowId) {
+        WorkflowEntity wf = workflowRepo.findById(workflowId)
+                .orElseThrow();
+
+        if (wf.getStartMode() != StartMode.SCHEDULED ||
+            wf.getCronExpression() == null) {
+            return;
+        }
+
+        String recurringId = "workflow-" + wf.getId();
+
+        RecurringJob.addOrUpdate(
+                recurringId,
+                wf.getCronExpression(),
+                () -> executionService.startExecution(wf.getId())
+        );
+    }
+}
+
