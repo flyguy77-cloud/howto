@@ -1,0 +1,92 @@
+Graph Traversal (lineaire variant)
+public Optional<WorkflowNodeEntity> findStartNode(UUID workflowId) {
+    return nodeRepo.findByWorkflowId(workflowId).stream()
+            .filter(n -> n.getKind() == NodeKind.START)
+            .findFirst();
+}
+
+public Optional<WorkflowNodeEntity> findNext(UUID nodeId, UUID workflowId) {
+    return edgeRepo.findByFromNodeIdAndWorkflowId(nodeId, workflowId)
+            .stream()
+            .findFirst()
+            .flatMap(edge -> nodeRepo.findById(edge.getToNodeId()));
+}
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowRunner {
+
+    private final WorkflowRepository workflowRepo;
+    private final WorkflowNodeRepository nodeRepo;
+    private final WorkflowEdgeRepository edgeRepo;
+    private final JobExecutionService jobExecService;
+    private final WorkflowExecutionRepository execRepo;
+
+    public void runWorkflow(UUID workflowId, UUID execId) {
+
+        WorkflowExecutionEntity exec = execRepo.findById(execId).orElseThrow();
+        exec.setStatus(WorkflowStatus.RUNNING);
+        execRepo.save(exec);
+
+        WorkflowNodeEntity node = findStartNode(workflowId)
+                .orElseThrow(() -> new IllegalStateException("No START node"));
+
+        while (node != null) {
+
+            if (node.getKind() == NodeKind.TASK) {
+                executeTask(node, execId);
+            }
+
+            node = findNext(node.getId(), workflowId).orElse(null);
+        }
+
+        exec.setStatus(WorkflowStatus.SUCCEEDED);
+        exec.setFinishedAt(Instant.now());
+        execRepo.save(exec);
+    }
+
+    private void executeTask(WorkflowNodeEntity node, UUID execId) {
+
+        if (node.getType() == NodeType.LOAD_SCRIPT) {
+            // metadataJson bevat script pad
+            return;
+        }
+
+        if (node.getType() == NodeType.RUN_SCRIPT) {
+
+            RunScriptRequestDto dto = createDto(node);
+
+            UUID jobExecId = jobExecService.execute(dto);
+
+            waitForJob(jobExecId);
+
+            if (!isSucceeded(jobExecId)) {
+                throw new RuntimeException("Node failed: " + node.getId());
+            }
+        }
+    }
+}
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowRunner {
+
+    private final WorkflowRepository wfRepo;
+    private final NodeRepository nodeRepo;
+    private final WorkflowExecutionRepository execRepo;
+    private final JobExecutionService jobExecService; // jouw K8s runner
+
+    public void runWorkflow(UUID workflowId, UUID execId, StartMode mode) {
+
+        WorkflowEntity wf = wfRepo.findById(workflowId).orElseThrow();
+
+        // 1) markeer RUNNING
+        var exec = execRepo.findById(execId).orElseThrow();
+        exec.setStatus(WorkflowStatus.RUNNING);
+        execRepo.save(exec);
+
+        // 2) haal nodes in volgorde op
+        List<NodeEntity> nodes = nodeRepo
+                .findByWorkflowOrderByOrderIndexAsc(wf);
+
+        // 3) filter op startmode (bijv. START node manueel vs
