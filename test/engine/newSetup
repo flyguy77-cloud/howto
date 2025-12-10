@@ -60,6 +60,14 @@ Delete recurrent jobs in jobrunr wanneer deze niet meer relevant is!
                                  └─────────────────────────────────┘
 
 
+Startnode bepalen - findStartNode()
+Volgende node bepalen - next(nodeId)
+Sequentiële uitvoering - outgoing size == 1
+Parallel detectie - outgoing size > 1
+Join-node detectie - incoming size > 1
+Route berekening - nodes + edges
+Toekomstige AND/OR gateway - via incoming
+
 public interface WorkflowRepository extends JpaRepository<WorkflowEntity, UUID> {
     @Query("SELECT w FROM WorkflowEntity w WHERE w.startMode = 'SCHEDULED'")
     List<WorkflowEntity> findAllScheduled();
