@@ -206,6 +206,15 @@ public class ScheduleConfig {
     private String timezone;    // "Europe/Amsterdam"
 }
 
+Of,
+
+@Data
+public record ScheduleConfig(
+    boolean enabled,
+    String cronExpression,
+    String timeZoneId
+) {}
+
 WorkflowEntity.java
 
 @Data
@@ -288,12 +297,20 @@ public class WorkflowExecutionService {
 
     public UUID startExecution(UUID workflowId) {
 
-        UUID execId = UUID.randomUUID();
+    UUID execId = UUID.randomUUID();
 
-        BackgroundJob.enqueue(() -> requestHandler.startWorkflow(workflowId, execId));
+    var entity = new WorkflowExecutionEntity();
+    entity.setExecId(execId);
+    entity.setWorkflowId(workflowId);
+    entity.setStatus(WorkflowExecutionStatus.PENDING);
+    entity.setStartedAt(Instant.now());
 
-        return execId;
-    }
+    execRepo.save(entity);
+
+    BackgroundJob.enqueue(() -> requestHandler.startWorkflow(workflowId, execId));
+
+    return execId;
+  }
 }
 
 
@@ -330,8 +347,7 @@ public class WorkflowRunner {
         // MVP: precies 1 volgende node
         NodeEntity nextNode = next.get(0);
 
-        BackgroundJob.enqueue(() -> runNode(nextNode, graph, execId)
-        );
+        BackgroundJob.enqueue(() -> runNode(nextNode, graph, execId));
     }
 }
 
