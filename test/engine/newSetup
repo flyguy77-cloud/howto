@@ -89,6 +89,19 @@ Delete recurrent jobs in jobrunr wanneer deze niet meer relevant is!
                                 │       → writes to database via JPA      │
                                 └─────────────────────────────────────────┘
 
+	1.	WorkflowStart (manual/scheduled)
+	2.	WorkflowExecutionService → centrale orkestratie
+	3.	WorkflowRunner → bepaalt volgorde en start nodes
+	4.	GraphBuilder & Model → workflowstructuur
+	5.	GraphUtils → logische beslissingen
+	6.	JobExecutionService → K8s executor
+	7.	Watchers → status + logs → database
+
+	•	GraphBuilder → bouwt de graaf
+	•	GraphModel → representatie
+	•	GraphUtils → intelligente beslissingslaag
+	•	WorkflowRunner → orchestrator van het geheel
+
 |-----------------------------------------------|
 | Startnode bepalen - findStartNode()           |
 | Volgende node bepalen - next(nodeId)          |
