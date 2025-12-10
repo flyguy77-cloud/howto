@@ -5,59 +5,89 @@ WorkflowController -> start een workflow manueel
 Delete recurrent jobs in jobrunr wanneer deze niet meer relevant is!
 
 
-                         ┌───────────────────────────────┐
-                         │   WorkflowSchedulePoller      │
-                         │ @Scheduled(fixedDelay=10s)    │
-                         └───────────────┬───────────────┘
-                                         │
-                                         ▼
-                         ┌───────────────────────────────┐
-                         │ WorkflowScheduleSyncService   │
-                         │ - zoek workflows met schedule │
-                         │ - addOrUpdate JobRunr recurring│
-                         └───────────────┬───────────────┘
-                                         │
-                                         ▼
-                         ┌───────────────────────────────┐
-                         │        JobRunr Engine         │
-                         │  RecurringJob.addOrUpdate()   │
-                         │  → triggert cron execution    │
-                         └───────────────┬───────────────┘
-                                         │
-                                         ▼
-                      (scheduled execution call)
-                                         │
-                                         ▼
-┌──────────────────────────────┐         ┌───────────────────────────┐
-│ WorkflowController           │         │ WorkflowExecutionService  │
-│ (MANUAL start)               │         │ (CENTRALE ENTRYPOINT)     │
-│  startWorkflow(id)           │         │  startExecution()         │
-└───────────────┬──────────────┘         └──────────────┬────────────┘
+                                 ┌───────────────────────────────┐
+                                 │     WorkflowSchedulePoller    │
+                                 │  @Scheduled(fixedDelay=10s)   │
+                                 │  - detecteert workflows met   │
+                                 │    schedule-config            │
+                                 └───────────────┬───────────────┘
+                                                 │
+                                                 ▼
+                                 ┌───────────────────────────────┐
+                                 │  WorkflowScheduleSyncService  │
+                                 │  - zoekt scheduled workflows  │
+                                 │  - registreert JobRunr cron   │
+                                 └───────────────┬───────────────┘
+                                                 │
+                                                 ▼
+                                 ┌───────────────────────────────┐
+                                 │          JobRunr Engine       │
+                                 │   Recurring jobs worden via   │
+                                 │   cron getriggerd             │
+                                 └───────────────┬───────────────┘
+                                                 │
+                                      (scheduled execution call)
+                                                 │
+                                                 ▼
+┌──────────────────────────────┐         ┌───────────────────────────────┐
+│ WorkflowController           │         │ WorkflowExecutionService      │
+│ (MANUAL start)               │         │ (CENTRALE ENTRYPOINT)         │
+│  startWorkflow(id)           │         │  - startExecution()           │
+└───────────────┬──────────────┘         └──────────────┬────────────────┘
                 │                                       │
-                │   MANUAL START                        │
+                │           MANUAL START                │
                 └───────────────────────────────────────┘
                                                   SCHEDULED START
-                                         (vanuit JobRunr worker thread)
+                                            (via JobRunr worker thread)
                                                        │
                                                        ▼
 
-                                        ┌───────────────────────────┐
-                                        │      WorkflowRunner       │
-                                        │   bouwt graaf + run seq   │
-                                        └──────────┬───────────────-┘
-                                                   ▼
-                                        ┌───────────────────────────┐
-                                        │       GraphBuilder        │
-                                        └──────────┬───────────────-┘
-                                                   ▼
-                                        ┌───────────────────────────┐
-                                        │ JobExecutionService (K8s) │
-                                        └──────────┬───────────────-┘
-                                                   ▼
-                                 ┌─────────────────────────────────┐
-                                 │     K8s Executor + Watchers     │
-                                 │   (status & logs → database)    │
-                                 └─────────────────────────────────┘
+                                  ┌──────────────────────────────────┐
+                                  │          WorkflowRunner          │
+                                  │  - bouwt graph                   │
+                                  │  - bepaalt uitvoerpad            │
+                                  │  - gebruikt GraphUtils           │
+                                  └───────────────┬─────────────────-┘
+                                                  │
+                                                  ▼
+                                  ┌──────────────────────────────────┐
+                                  │           GraphBuilder           │
+                                  │  - haalt nodes & edges op DB     │
+                                  │  - bouwt GraphModel              │
+                                  └───────────────┬────────────────-─┘
+                                                  │
+                                                  ▼
+                                  ┌──────────────────────────────────┐
+                                  │            GraphModel            │
+                                  │  - nodes (map)                   │
+                                  │  - outgoing edges                │
+                                  │  - incoming edges                │
+                                  │  - pure graaf representatie      │
+                                  └───────────────┬───────────────-──┘
+                                                  │
+                                                  ▼
+                                  ┌──────────────────────────────────┐
+                                  │       WorkflowGraphUtils         │
+                                  │ - start node(s)                  │
+                                  │ - sequential vs parallel         │
+                                  │ - join (ALL / ANY) detectie      │
+                                  │ - predecessors / successors      │
+                                  │ - helper-algoritmen              │
+                                  └───────────────┬────────────────-─┘
+                                                  │
+                                                  ▼
+                                   ┌─────────────────────────────────┐
+                                   │      JobExecutionService        │
+                                   │  - voert individuele node uit   │
+                                   │  - creëert K8s Jobs             │
+                                   │  - start watchers               │
+                                   └──────────────┬──────────────────┘
+                                                  ▼
+                                ┌─────────────────────────────────────────┐
+                                │          K8s Executor + Watchers        │
+                                │      (StatusWatcher + LogWatcher)       │
+                                │       → writes to database via JPA      │
+                                └─────────────────────────────────────────┘
 
 
 Startnode bepalen - findStartNode()
