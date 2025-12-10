@@ -1,0 +1,120 @@
+WorkflowSchedulePoller
+
+Doel: Periodiek detecteren of er workflows bestaan die een geactiveerde schedule-configuratie hebben.
+Werking:
+	•	Draait via @Scheduled(fixedDelay=10s) als Java/Spring scheduler.
+	•	Roept elke 10 seconden de sync-service aan.
+	•	Bij nieuwe of gewijzigde schedules wordt registratie in JobRunr opnieuw uitgevoerd.
+
+⸻
+
+WorkflowScheduleSyncService
+
+Doel: Synchroniseren van workflow-schema’s met JobRunr.
+Werking:
+	•	Leest workflows uit de database die een SCHEDULED startnode bevatten.
+	•	Registreert of update de bijbehorende JobRunr recurring job (RecurringJobScheduler.scheduleRecurrently).
+	•	Vormt de schakel tussen workflowmetadata en JobRunr’s cron-engine.
+
+⸻
+
+JobRunr Engine (3rd party component)
+
+Doel: Uitvoeren van ge-enqueue’de workflowtaken, met ondersteuning voor cron.
+Werking:
+	•	Voert zowel ad-hoc nodes (BackgroundJob.enqueue) als recurring workflows (scheduleRecurrently) uit.
+	•	Start elke taak in een afzonderlijke worker-thread.
+	•	Roept jouw WorkflowRunner aan voor de daadwerkelijke uitvoerlogica.
+
+⸻
+
+WorkflowController
+
+Doel: REST-entrypoint voor handmatige workflowstarts.
+Werking:
+	•	Ontvangt een request van een gebruiker of andere service.
+	•	Valideert input en roept WorkflowExecutionService.startExecution(...) aan.
+	•	Hiermee start de workflow zonder tussenkomst van JobRunr.
+
+⸻
+
+WorkflowExecutionService
+
+Doel: Centrale entrypoint voor het starten van workflow-executies (zowel manual als scheduled).
+Werking:
+	•	Maakt een nieuwe workflow-executie aan in de database (workflowExecId).
+	•	Roept vervolgens de WorkflowRunner async aan via JobRunr (enqueue).
+	•	Bundelt audit-, security- en orchestratieverantwoordelijkheden.
+
+⸻
+
+WorkflowRunner
+
+Doel: De “workflow engine” zelf: bepaalt wat er moet gebeuren en in welke volgorde.
+Verantwoordelijkheden:
+	•	Bouwt een graaf via GraphBuilder.
+	•	Bepaalt startnode(s) aan de hand van node-type en schedule.
+	•	Voert nodes sequentieel uit (MVP).
+	•	Plant opvolgende nodes opnieuw in via JobRunr (enqueue).
+	•	Eindigt wanneer er geen opvolgers meer zijn.
+
+⸻
+
+GraphBuilder
+
+Doel: Opbouwen van een pure, onveranderlijke graafrepresentatie uit database-entiteiten.
+Werking:
+	•	Haalt alle nodes en edges op voor de workflow.
+	•	Bouwt drie datastructuren:
+	•	map van nodeId → node
+	•	map van nodeId → outgoing edges
+	•	map van nodeId → incoming edges
+	•	Levert een GraphModel terug dat door de engine gebruikt wordt.
+
+⸻
+
+GraphModel
+
+Doel: Lightweight representatie van een workflowgraaf.
+Werking:
+	•	Bevat alleen de meest noodzakelijke structuur: nodes, outgoing, incoming.
+	•	Biedt eenvoudige navigatiemethoden:
+	•	next(nodeId)
+	•	previous(nodeId)
+	•	findStartNode()
+	•	Is read-only → ideale basis voor deterministische workflow-executie.
+
+⸻
+
+WorkflowGraphUtils
+
+Doel: Verzamelplaats voor alle domeinlogica voor grafen.
+Werking:
+	•	Bepaalt startnodes (manual/schedule).
+	•	Bepaalt sequentieel vs parallel gedrag (MVP gebruikt alleen sequentieel).
+	•	Vindt predecessors / successors.
+	•	Kan later uitgebreid worden met gateway-logica (ALL/ANY).
+	•	Houdt de GraphModel zuiver door logica extern te plaatsen.
+
+⸻
+
+JobExecutionService (K8s Executor)
+
+Doel: Uitvoeren van individuele workflow-nodes via Kubernetes Jobs.
+Werking:
+	•	Bouwt een Kubernetes Job op basis van node properties (bijv. script).
+	•	Creëert de Job via Fabric8 client.
+	•	Start watchers voor status + logs.
+	•	Schrijft output en status bij in database-tabellen.
+	•	Geeft controle terug aan de WorkflowRunner zodra de node klaar is.
+
+⸻
+
+K8s Watchers (StatusWatcher + LogWatcher)
+
+Doel: Runtime monitoring van de Kubernetes Job Pods.
+Werking:
+	•	StatusWatcher luistert naar Job events en vertaalt dit naar SUCCEEDED/FAILED.
+	•	LogWatcher streamt container-output en schrijft deze in chunks weg.
+	•	Beide watchers zijn volledig stateless en sluiten zichzelf netjes.
+	•	Zijn essentieel voor realtime feedback in het workflow-platform.
