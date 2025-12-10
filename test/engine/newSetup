@@ -4,31 +4,6 @@ WorkflowController -> start een workflow manueel
 
 Delete recurrent jobs in jobrunr wanneer deze niet meer relevant is!
 
-.workflow
- ├── controller
- │     └── WorkflowController.java
- ├── model
- │     ├── NodeKind.java
- │     ├── NodeType.java
- │     ├── StartMode.java
- │     ├── ExecutionCondition.java
- │     ├── WorkflowEntity.java
- │     ├── NodeEntity.java
- │     ├── EdgeEntity.java
- │     └── ScheduleConfig.java
- ├── graph
- │     ├── GraphModel.java
- │     └── GraphBuilder.java
- ├── execution
- │     ├── WorkflowExecutionService.java
- │     ├── WorkflowRunner.java
- │     └── WorkflowNodeExecutor.java   ← vertaalt NodeType → actie
- ├── scheduling
- │     ├── WorkflowSchedulePoller.java
- │     └── WorkflowScheduleSyncService.java
- └── k8s
-       └── JobExecutionService.java   ← bestaande executor
-
 
                          ┌───────────────────────────────┐
                          │   WorkflowSchedulePoller      │
@@ -414,28 +389,55 @@ WorkflowScheduleSyncService.java
 @RequiredArgsConstructor
 public class WorkflowScheduleSyncService {
 
-    private final WorkflowRepository wfRepo;
-    private final BackgroundJobRequestHandler handler;
+    private final WorkflowRepository workflowRepo;
+    private final JobScheduler jobScheduler;
+    private final WorkflowExecutionService executionService;
 
     public void syncAll() {
-        List<WorkflowEntity> workflows = wfRepo.findAllWithEnabledSchedule();
+        // pak alle workflows met enabled = true
+        var workflows = workflowRepo.findAllWithEnabledSchedule();
 
-        workflows.forEach(this::registerRecurringJob);
-    }
+        for (WorkflowEntity wf : workflows) {
+            var schedule = wf.getSchedule();
+            if (schedule == null || !schedule.isEnabled()) continue;
 
-    private void registerRecurringJob(WorkflowEntity wf) {
+            String recurringId = "workflow-" + wf.getId();
 
-        String recurringId = "wf-" + wf.getId();
-
-        RecurringJob.addOrUpdate(
-                recurringId,
-                () -> handler.startWorkflow(wf.getId(), UUID.randomUUID()),
-                CronExpression.create(wf.getSchedule().getCron(),
-                                      ZoneId.of(wf.getSchedule().getTimezone()))
-        );
+            // Dit is de JobRunr 8.x manier:
+            jobScheduler.scheduleRecurrently(
+                    recurringId,
+                    schedule.getCron(),        // bv. "0 0 * * *"
+                    () -> executionService.startExecution(wf.getId())
+            );
+        }
     }
 }
 
+OF via de BackgroundJob, maar minder testbaar:
+@Service
+@RequiredArgsConstructor
+public class WorkflowScheduleSyncService {
+
+    private final WorkflowRepository workflowRepo;
+    private final WorkflowExecutionService executionService;
+
+    public void syncAll() {
+        var workflows = workflowRepo.findAllWithEnabledSchedule();
+
+        for (WorkflowEntity wf : workflows) {
+            var schedule = wf.getSchedule();
+            if (schedule == null || !schedule.isEnabled()) continue;
+
+            String recurringId = "workflow-" + wf.getId();
+
+            BackgroundJob.scheduleRecurrently(
+                    recurringId,
+                    schedule.getCron(),
+                    () -> executionService.startExecution(wf.getId())
+            );
+        }
+    }
+}
 
 ⸻
 
