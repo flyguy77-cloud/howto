@@ -1,0 +1,465 @@
+WorkfflowSchedulePoller -> WorkflowScheduleSyncService -> scant de database op jobrunr scheduled workflows,
+    voegt of update de recurring jobrunr jobs.
+WorkflowController -> start een workflow manueel
+
+Delete recurrent jobs in jobrunr wanneer deze niet meer relevant is!
+
+.workflow
+ ├── controller
+ │     └── WorkflowController.java
+ ├── model
+ │     ├── NodeKind.java
+ │     ├── NodeType.java
+ │     ├── StartMode.java
+ │     ├── ExecutionCondition.java
+ │     ├── WorkflowEntity.java
+ │     ├── NodeEntity.java
+ │     ├── EdgeEntity.java
+ │     └── ScheduleConfig.java
+ ├── graph
+ │     ├── GraphModel.java
+ │     └── GraphBuilder.java
+ ├── execution
+ │     ├── WorkflowExecutionService.java
+ │     ├── WorkflowRunner.java
+ │     └── WorkflowNodeExecutor.java   ← vertaalt NodeType → actie
+ ├── scheduling
+ │     ├── WorkflowSchedulePoller.java
+ │     └── WorkflowScheduleSyncService.java
+ └── k8s
+       └── JobExecutionService.java   ← bestaande executor
+
+
+                         ┌───────────────────────────────┐
+                         │   WorkflowSchedulePoller      │
+                         │ @Scheduled(fixedDelay=10s)    │
+                         └───────────────┬───────────────┘
+                                         │
+                                         ▼
+                         ┌───────────────────────────────┐
+                         │ WorkflowScheduleSyncService   │
+                         │ - zoek workflows met schedule │
+                         │ - addOrUpdate JobRunr recurring│
+                         └───────────────┬───────────────┘
+                                         │
+                                         ▼
+                         ┌───────────────────────────────┐
+                         │        JobRunr Engine         │
+                         │  RecurringJob.addOrUpdate()   │
+                         │  → triggert cron execution    │
+                         └───────────────┬───────────────┘
+                                         │
+                                         ▼
+                      (scheduled execution call)
+                                         │
+                                         ▼
+┌──────────────────────────────┐         ┌───────────────────────────┐
+│ WorkflowController           │         │ WorkflowExecutionService  │
+│ (MANUAL start)               │         │ (CENTRALE ENTRYPOINT)     │
+│  startWorkflow(id)           │         │  startExecution()         │
+└───────────────┬──────────────┘         └──────────────┬────────────┘
+                │                                       │
+                │   MANUAL START                        │
+                └───────────────────────────────────────┘
+                                                  SCHEDULED START
+                                         (vanuit JobRunr worker thread)
+                                                       │
+                                                       ▼
+
+                                        ┌───────────────────────────┐
+                                        │      WorkflowRunner       │
+                                        │   bouwt graaf + run seq   │
+                                        └──────────┬───────────────-┘
+                                                   ▼
+                                        ┌───────────────────────────┐
+                                        │       GraphBuilder        │
+                                        └──────────┬───────────────-┘
+                                                   ▼
+                                        ┌───────────────────────────┐
+                                        │ JobExecutionService (K8s) │
+                                        └──────────┬───────────────-┘
+                                                   ▼
+                                 ┌─────────────────────────────────┐
+                                 │     K8s Executor + Watchers     │
+                                 │   (status & logs → database)    │
+                                 └─────────────────────────────────┘
+
+
+public interface WorkflowRepository extends JpaRepository<WorkflowEntity, UUID> {
+    @Query("SELECT w FROM WorkflowEntity w WHERE w.startMode = 'SCHEDULED'")
+    List<WorkflowEntity> findAllScheduled();
+}
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowScheduleSyncService {
+    private final WorkflowRepository workflowRepo;
+    private final WorkflowExecutionService executionService;
+
+    public void syncRecurringJobs() {
+        var scheduledWorkflows = workflowRepo.findAllScheduled();
+
+        for (WorkflowEntity workflow : scheduledWorkflows) {
+            String jobId = "workflow-" + workflow.getId();
+
+            RecurringJob.addOrUpdate(jobId, () -> executionService.startExecution(wf.getId()),
+                workflow.getCronExpression() // staat bv. op START node
+            );
+        }
+    }
+}
+
+@Component
+@RequiredArgsConstructor
+public class WorkflowSchedulePoller {
+    private final WorkflowScheduleSyncService syncService;
+
+    @Scheduled(fixedDelayString = "${workflow.schedule.sync-interval:10000}")
+    public void sync() {
+        syncService.syncRecurringJobs();
+    }
+}
+
+
+------
+
+Pakketstructuur
+
+.workflow
+ ├── controller
+ │     └── WorkflowController.java
+ ├── model
+ │     ├── NodeKind.java
+ │     ├── NodeType.java
+ │     ├── StartMode.java
+ │     ├── ExecutionCondition.java
+ │     ├── WorkflowEntity.java
+ │     ├── NodeEntity.java
+ │     ├── EdgeEntity.java
+ │     └── ScheduleConfig.java
+ ├── graph
+ │     ├── GraphModel.java
+ │     └── GraphBuilder.java
+ ├── execution
+ │     ├── WorkflowExecutionService.java
+ │     ├── WorkflowRunner.java
+ │     └── WorkflowNodeExecutor.java   ← vertaalt NodeType → actie
+ ├── scheduling
+ │     ├── WorkflowSchedulePoller.java
+ │     └── WorkflowScheduleSyncService.java
+ └── k8s
+       └── JobExecutionService.java   ← jouw bestaande executor
+
+
+⸻
+
+1. MODEL – future-proof maar MVP-scope
+
+NodeKind.java
+
+public enum NodeKind {
+    START,
+    TASK,
+    GATEWAY   // voor MVP nog niet gebruikt
+}
+
+StartMode.java
+
+public enum StartMode {
+    MANUAL,
+    SCHEDULED
+}
+
+ExecutionCondition.java
+
+public enum ExecutionCondition {
+    ALL,    // AND-join
+    ANY     // OR-join
+}
+
+NodeType.java
+
+public enum NodeType {
+    LOAD_SCRIPT,
+    RUN_SCRIPT,
+    GENERATE_REPORT,
+    END
+}
+
+NodeEntity.java
+
+@Data
+public class NodeEntity {
+
+    private UUID id;
+    private String nodeKey;     // “node_run_script_xxxxxx”
+    private NodeKind kind;
+    private StartMode startMode;
+    private NodeType type;
+    private ExecutionCondition joinMode;
+}
+
+EdgeEntity.java
+
+@Data
+public class EdgeEntity {
+    private UUID id;
+    private String edgeKey;
+    private UUID sourceNodeId;
+    private UUID targetNodeId;
+}
+
+ScheduleConfig.java
+
+@Data
+public class ScheduleConfig {
+    private boolean enabled;
+    private String cron;        // "0 0 * * *"
+    private String timezone;    // "Europe/Amsterdam"
+}
+
+WorkflowEntity.java
+
+@Data
+public class WorkflowEntity {
+
+    private UUID id;
+    private String name;
+
+    private List<NodeEntity> nodes;
+    private List<EdgeEntity> edges;
+
+    private ScheduleConfig schedule;
+
+    public NodeEntity findNode(UUID nodeId) {
+        return nodes.stream()
+                .filter(n -> n.getId().equals(nodeId))
+                .findFirst()
+                .orElseThrow();
+    }
+}
+
+
+⸻
+
+2. GRAPHBUILDER – future-proof,MVP gebruikt alleen sequentieel
+
+GraphModel.java
+
+@Data
+@AllArgsConstructor
+public class GraphModel {
+    private WorkflowEntity workflow;
+    private Map<UUID, List<NodeEntity>> next;
+    private List<NodeEntity> startNodes;
+}
+
+GraphBuilder.java
+
+@Component
+public class GraphBuilder {
+
+    public GraphModel build(WorkflowEntity wf) {
+
+        Map<UUID, List<NodeEntity>> nextMap = new HashMap<>();
+
+        for (NodeEntity node : wf.getNodes()) {
+            List<UUID> nextIds = wf.getEdges().stream()
+                    .filter(e -> e.getSourceNodeId().equals(node.getId()))
+                    .map(EdgeEntity::getTargetNodeId)
+                    .toList();
+
+            List<NodeEntity> nextNodes = wf.getNodes().stream()
+                    .filter(n -> nextIds.contains(n.getId()))
+                    .toList();
+
+            nextMap.put(node.getId(), nextNodes);
+        }
+
+        List<NodeEntity> startNodes = wf.getNodes().stream()
+                .filter(n -> n.getKind() == NodeKind.START)
+                .toList();
+
+        return new GraphModel(wf, nextMap, startNodes);
+    }
+}
+
+
+⸻
+
+3. EXECUTION – WorkflowExecutionService, WorkflowRunner, NodeExecutor
+
+WorkflowExecutionService.java
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowExecutionService {
+
+    private final WorkflowRepository workflowRepo;
+    private final BackgroundJobRequestHandler requestHandler;
+
+    public UUID startExecution(UUID workflowId) {
+
+        UUID execId = UUID.randomUUID();
+
+        BackgroundJob.enqueue(() ->
+                requestHandler.startWorkflow(workflowId, execId)
+        );
+
+        return execId;
+    }
+}
+
+
+⸻
+
+WorkflowRunner.java (de motor)
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowRunner {
+
+    private final WorkflowRepository wfRepo;
+    private final GraphBuilder graphBuilder;
+    private final WorkflowNodeExecutor nodeExecutor;
+
+    public void runWorkflow(UUID workflowId, UUID execId) {
+
+        WorkflowEntity wf = wfRepo.findById(workflowId).orElseThrow();
+        GraphModel graph = graphBuilder.build(wf);
+
+        // MVP: maar één startnode
+        NodeEntity start = graph.getStartNodes().get(0);
+
+        runNode(start, graph, execId);
+    }
+
+    private void runNode(NodeEntity node, GraphModel graph, UUID execId) {
+
+        nodeExecutor.execute(node, execId);
+
+        List<NodeEntity> next = graph.getNext().get(node.getId());
+        if (next == null || next.isEmpty()) return;   // END
+
+        // MVP: precies 1 volgende node
+        NodeEntity nextNode = next.get(0);
+
+        BackgroundJob.enqueue(() ->
+                runNode(nextNode, graph, execId)
+        );
+    }
+}
+
+
+⸻
+
+WorkflowNodeExecutor.java
+
+vertaalt node → actie
+roept Kubernetes executor aan
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowNodeExecutor {
+
+    private final JobExecutionService jobExecService;
+
+    public void execute(NodeEntity node, UUID execId) {
+
+        switch (node.getType()) {
+            case LOAD_SCRIPT ->
+                jobExecService.executeLoadScript(node, execId);
+
+            case RUN_SCRIPT ->
+                jobExecService.executeRunScript(node, execId);
+
+            case GENERATE_REPORT ->
+                jobExecService.executeReport(node, execId);
+
+            case END -> {
+                // niets
+            }
+
+            default -> throw new IllegalStateException(
+                    "Unknown node type: " + node.getType());
+        }
+    }
+}
+
+
+⸻
+
+4. SCHEDULING — JobRunr 8.3.x
+
+WorkflowSchedulePoller.java
+
+@Component
+@RequiredArgsConstructor
+public class WorkflowSchedulePoller {
+
+    private final WorkflowScheduleSyncService syncService;
+
+    @Scheduled(fixedDelay = 10_000)
+    public void sync() {
+        syncService.syncAll();
+    }
+}
+
+
+⸻
+
+WorkflowScheduleSyncService.java
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowScheduleSyncService {
+
+    private final WorkflowRepository wfRepo;
+    private final BackgroundJobRequestHandler handler;
+
+    public void syncAll() {
+        List<WorkflowEntity> workflows = wfRepo.findAllWithEnabledSchedule();
+
+        workflows.forEach(this::registerRecurringJob);
+    }
+
+    private void registerRecurringJob(WorkflowEntity wf) {
+
+        String recurringId = "wf-" + wf.getId();
+
+        RecurringJob.addOrUpdate(
+                recurringId,
+                () -> handler.startWorkflow(wf.getId(), UUID.randomUUID()),
+                CronExpression.create(wf.getSchedule().getCron(),
+                                      ZoneId.of(wf.getSchedule().getTimezone()))
+        );
+    }
+}
+
+
+⸻
+
+5. Controller
+
+WorkflowController.java
+
+@RestController
+@RequiredArgsConstructor
+@RequestMapping("/workflows")
+public class WorkflowController {
+
+    private final WorkflowExecutionService execService;
+    private final WorkflowRepository wfRepo;
+
+    @PostMapping("/{id}/start")
+    public UUID start(@PathVariable UUID id) {
+        return execService.startExecution(id);
+    }
+
+    @PutMapping("/{id}/schedule")
+    public void setSchedule(@PathVariable UUID id, @RequestBody ScheduleConfig config) {
+        WorkflowEntity wf = wfRepo.findById(id).orElseThrow();
+        wf.setSchedule(config);
+        wfRepo.save(wf);
+    }
+}
