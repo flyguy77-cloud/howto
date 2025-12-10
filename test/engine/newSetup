@@ -89,14 +89,15 @@ Delete recurrent jobs in jobrunr wanneer deze niet meer relevant is!
                                 │       → writes to database via JPA      │
                                 └─────────────────────────────────────────┘
 
-
-Startnode bepalen - findStartNode()
-Volgende node bepalen - next(nodeId)
-Sequentiële uitvoering - outgoing size == 1
-Parallel detectie - outgoing size > 1
-Join-node detectie - incoming size > 1
-Route berekening - nodes + edges
-Toekomstige AND/OR gateway - via incoming
+|-----------------------------------------------|
+| Startnode bepalen - findStartNode()           |
+| Volgende node bepalen - next(nodeId)          |
+| Sequentiële uitvoering - outgoing size == 1   |
+| Parallel detectie - outgoing size > 1         |
+| Join-node detectie - incoming size > 1        |
+| Route berekening - nodes + edges              |
+| Toekomstige AND/OR gateway - via incoming     |
+|-----------------------------------------------|
 
 public interface WorkflowRepository extends JpaRepository<WorkflowEntity, UUID> {
     @Query("SELECT w FROM WorkflowEntity w WHERE w.startMode = 'SCHEDULED'")
@@ -315,9 +316,7 @@ public class WorkflowExecutionService {
 
         UUID execId = UUID.randomUUID();
 
-        BackgroundJob.enqueue(() ->
-                requestHandler.startWorkflow(workflowId, execId)
-        );
+        BackgroundJob.enqueue(() -> requestHandler.startWorkflow(workflowId, execId));
 
         return execId;
     }
@@ -357,8 +356,7 @@ public class WorkflowRunner {
         // MVP: precies 1 volgende node
         NodeEntity nextNode = next.get(0);
 
-        BackgroundJob.enqueue(() ->
-                runNode(nextNode, graph, execId)
+        BackgroundJob.enqueue(() -> runNode(nextNode, graph, execId)
         );
     }
 }
@@ -380,26 +378,20 @@ public class WorkflowNodeExecutor {
     public void execute(NodeEntity node, UUID execId) {
 
         switch (node.getType()) {
-            case LOAD_SCRIPT ->
-                jobExecService.executeLoadScript(node, execId);
+            case LOAD_SCRIPT -> jobExecService.executeLoadScript(node, execId);
 
-            case RUN_SCRIPT ->
-                jobExecService.executeRunScript(node, execId);
+            case RUN_SCRIPT -> jobExecService.executeRunScript(node, execId);
 
-            case GENERATE_REPORT ->
-                jobExecService.executeReport(node, execId);
+            case GENERATE_REPORT -> jobExecService.executeReport(node, execId);
 
             case END -> {
                 // niets
             }
 
-            default -> throw new IllegalStateException(
-                    "Unknown node type: " + node.getType());
+            default -> throw new IllegalStateException("Unknown node type: " + node.getType());
         }
     }
 }
-
-
 ⸻
 
 4. SCHEDULING — JobRunr 8.3.x
@@ -417,7 +409,6 @@ public class WorkflowSchedulePoller {
         syncService.syncAll();
     }
 }
-
 
 ⸻
 
