@@ -112,44 +112,6 @@ Delete recurrent jobs in jobrunr wanneer deze niet meer relevant is!
 | Toekomstige AND/OR gateway - via incoming     |
 |-----------------------------------------------|
 
-public interface WorkflowRepository extends JpaRepository<WorkflowEntity, UUID> {
-    @Query("SELECT w FROM WorkflowEntity w WHERE w.startMode = 'SCHEDULED'")
-    List<WorkflowEntity> findAllScheduled();
-}
-
-@Service
-@RequiredArgsConstructor
-public class WorkflowScheduleSyncService {
-    private final WorkflowRepository workflowRepo;
-    private final WorkflowExecutionService executionService;
-
-    public void syncRecurringJobs() {
-        var scheduledWorkflows = workflowRepo.findAllScheduled();
-
-        for (WorkflowEntity workflow : scheduledWorkflows) {
-            String jobId = "workflow-" + workflow.getId();
-
-            RecurringJob.addOrUpdate(jobId, () -> executionService.startExecution(wf.getId()),
-                workflow.getCronExpression() // staat bv. op START node
-            );
-        }
-    }
-}
-
-@Component
-@RequiredArgsConstructor
-public class WorkflowSchedulePoller {
-    private final WorkflowScheduleSyncService syncService;
-
-    @Scheduled(fixedDelayString = "${workflow.schedule.sync-interval:10000}")
-    public void sync() {
-        syncService.syncRecurringJobs();
-    }
-}
-
-
-------
-
 Pakketstructuur
 
 .workflow
@@ -178,8 +140,7 @@ Pakketstructuur
        └── JobExecutionService.java   ← jouw bestaande executor
 
 
-⸻
-
+------
 1. MODEL – future-proof maar MVP-scope
 
 NodeKind.java
@@ -392,15 +353,9 @@ public class WorkflowNodeExecutor {
 
         switch (node.getType()) {
             case LOAD_SCRIPT -> jobExecService.executeLoadScript(node, execId);
-
             case RUN_SCRIPT -> jobExecService.executeRunScript(node, execId);
-
             case GENERATE_REPORT -> jobExecService.executeReport(node, execId);
-
-            case END -> {
-                // niets
-            }
-
+            case END -> { // niets }
             default -> throw new IllegalStateException("Unknown node type: " + node.getType());
         }
     }
@@ -408,6 +363,11 @@ public class WorkflowNodeExecutor {
 ⸻
 
 4. SCHEDULING — JobRunr 8.3.x
+
+public interface WorkflowRepository extends JpaRepository<WorkflowEntity, UUID> {
+    @Query("SELECT w FROM WorkflowEntity w WHERE w.startMode = 'SCHEDULED'")
+    List<WorkflowEntity> findAllScheduled();
+}
 
 WorkflowSchedulePoller.java
 
@@ -422,8 +382,6 @@ public class WorkflowSchedulePoller {
         syncService.syncAll();
     }
 }
-
-⸻
 
 WorkflowScheduleSyncService.java
 
@@ -446,8 +404,7 @@ public class WorkflowScheduleSyncService {
             String recurringId = "workflow-" + wf.getId();
 
             // Dit is de JobRunr 8.x manier:
-            jobScheduler.scheduleRecurrently(
-                    recurringId,
+            jobScheduler.scheduleRecurrently(recurringId,
                     schedule.getCron(),        // bv. "0 0 * * *"
                     () -> executionService.startExecution(wf.getId())
             );
@@ -455,7 +412,9 @@ public class WorkflowScheduleSyncService {
     }
 }
 
-OF via de BackgroundJob, maar minder testbaar:
+OF,
+via de BackgroundJob, maar minder testbaar:
+
 @Service
 @RequiredArgsConstructor
 public class WorkflowScheduleSyncService {
@@ -480,7 +439,6 @@ public class WorkflowScheduleSyncService {
         }
     }
 }
-
 ⸻
 
 5. Controller
