@@ -1,6 +1,5 @@
-<span style="color:orange;font-weight:bold">
-Let op: dit is belangrijk
-</span>
+<span style="background-color:yellow">highlight</span>
+
     @Service
     @RequiredArgsConstructor
     public class JobExecutionService {
