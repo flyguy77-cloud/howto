@@ -1,5 +1,6 @@
-Dit is <span style="color:red">rood</span> en dit is <span style="color:#00aa00">groen</span>.
-  
+<span style="color:orange;font-weight:bold">
+Let op: dit is belangrijk
+</span>
     @Service
     @RequiredArgsConstructor
     public class JobExecutionService {
