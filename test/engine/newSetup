@@ -4,7 +4,71 @@ WorkflowController -> start een workflow manueel
 
 Delete recurrent jobs in jobrunr wanneer deze niet meer relevant is!
 
+@Service
+@RequiredArgsConstructor
+public class JobExecutionService {
 
+    // BESTAANDE API-METHODE → blijft werken
+    public UUID executeScriptJob(RunScriptNodeRequestDto dto) {
+        UUID execId = UUID.randomUUID();
+        executeScriptJobInternal(dto, execId);
+        return execId;
+    }
+
+    // NIEUW, maar puur technisch
+    public void executeScriptJobInternal(RunScriptNodeRequestDto dto, UUID execId) {
+        //   HIER komt 100% de huidige code te staan
+        // - k8s job build
+        // - create job
+        // - start watchers
+        // - logging
+    }
+}
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowNodeExecutor {
+
+    private final JobExecutionService jobExecutionService;
+
+    public void execute(NodeEntity node, UUID workflowExecId) {
+
+        // GEEN nieuwe abstracties
+        // GEEN nieuwe DTO’s
+        // GEEN commands
+
+        RunScriptNodeRequestDto dto =
+                new RunScriptNodeRequestDto(
+                        node.getScript(),        // of hoe het bij jou heet
+                        node.getImage(),
+                        node.getArgs(),
+                        node.getEnv()
+                );
+
+        jobExecutionService.executeScriptJobInternal(dto, workflowExecId);
+    }
+}
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowExecutionService {
+
+    private final WorkflowRunner workflowRunner;
+
+    public UUID startExecution(UUID workflowId) {
+        UUID workflowExecId = UUID.randomUUID();
+
+        // (optioneel) persist WorkflowExecutionEntity
+        // status = PENDING / RUNNING etc.
+
+        // start async via JobRunr
+        BackgroundJob.enqueue(() ->
+                workflowRunner.runWorkflow(workflowId, workflowExecId)
+        );
+
+        return workflowExecId;
+    }
+}
                                  ┌───────────────────────────────┐
                                  │     WorkflowSchedulePoller    │
                                  │  @Scheduled(fixedDelay=10s)   │
