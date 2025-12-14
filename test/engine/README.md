@@ -1,5 +1,3 @@
-<span style="color:red"><strong>LET OP</strong></span>
-
     @Service
     @RequiredArgsConstructor
     public class JobExecutionService {
