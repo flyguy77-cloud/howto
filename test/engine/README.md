@@ -1,4 +1,4 @@
-
+Dit is <span style="color:red">rood</span> en dit is <span style="color:#00aa00">groen</span>.
   
     @Service
     @RequiredArgsConstructor
