@@ -1,0 +1,62 @@
+@RestController
+@RequiredArgsConstructor
+@RequestMapping("/workflows")
+public class WorkflowController {
+
+    private final WorkflowService workflowService;
+
+    @PutMapping("/{id}")
+    public void updateWorkflow(
+            @PathVariable UUID id,
+            @RequestBody WorkflowUpdateDto dto
+    ) {
+        workflowService.updateWorkflow(id, dto);
+    }
+}
+
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowService {
+
+    private final WorkflowRepository repo;
+    private final WorkflowScheduleRegistrar scheduleRegistrar;
+
+    @Transactional
+    public void updateWorkflow(UUID id, WorkflowUpdateDto dto) {
+
+        WorkflowEntity wf = repo.findById(id).orElseThrow();
+        wf.apply(dto);                // nodes, edges, scheduleConfig, etc.
+
+        repo.save(wf);
+
+        // DÍT is het moment
+        scheduleRegistrar.syncSchedule(wf);
+    }
+}
+
+
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowScheduleRegistrar {
+
+    private final JobScheduler jobScheduler;
+    private final WorkflowExecutionService executionService;
+
+    public void syncSchedule(WorkflowEntity wf) {
+
+        String recurringId = "workflow-" + wf.getId();
+
+        if (wf.getSchedule() == null || !wf.getSchedule().isEnabled()) {
+            jobScheduler.delete(recurringId);
+            return;
+        }
+
+        jobScheduler.scheduleRecurrently(
+                recurringId,
+                wf.getSchedule().getCron(),
+                () -> executionService.startExecution(wf.getId())
+        );
+    }
+}
