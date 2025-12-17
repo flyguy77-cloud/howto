@@ -1,0 +1,113 @@
+Swagger serializeert JPA entities met bidirectionele relaties,
+waardoor Workflow → Node → Workflow → Node → … ontstaat.
+
+Dat is onvermijdelijk zolang Swagger entities ziet.
+
+⸻
+
+De enige structureel juiste oplossing
+
+Swagger mag NOOIT entities zien. Alleen DTO’s.
+
+Alles daarbuiten is een workaround, geen oplossing.
+
+⸻
+
+Stap-voor-stap fix (minimale impact)
+
+Stap 1 — Controllers mogen alleen DTO’s gebruiken
+
+DIT is verplicht
+
+Fout:
+
+@PostMapping
+public WorkflowEntity create(@RequestBody WorkflowEntity wf) {
+    return repo.save(wf);
+}
+
+Goed:
+
+@PostMapping
+public WorkflowDto create(@RequestBody WorkflowDto dto) {
+    WorkflowEntity wf = repo.save(dto.toEntity());
+    return WorkflowDto.fromEntity(wf);
+}
+
+Swagger ziet nu WorkflowDto, niet de entity-boom.
+
+⸻
+
+Stap 2 — DTO’s zijn plat (geen back-references)
+
+WorkflowDto
+
+public record WorkflowDto(
+        UUID id,
+        String name,
+        List<NodeDto> nodes,
+        List<EdgeDto> edges,
+        ScheduleConfigDto schedule
+) {}
+
+NodeDto
+
+public record NodeDto(
+        String nodeId,
+        NodeKind kind,
+        NodeType type,
+        Map<String, Object> config
+) {}
+
+NOOIT dit doen in DTO:
+
+WorkflowDto workflow;   // veroorzaakt recursion
+
+
+⸻
+
+Stap 3 — Entities blijven bidirectioneel (dat is OK)
+
+Je hoeft je entities niet te veranderen.
+
+@Entity
+public class WorkflowEntity {
+
+    @OneToMany(mappedBy = "workflow", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<NodeEntity> nodes = new ArrayList<>();
+}
+
+@Entity
+public class NodeEntity {
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    private WorkflowEntity workflow;
+}
+
+Dat is correct JPA-modeling
+Het probleem ontstaat pas bij JSON-serialisatie
+
+⸻
+
+Stap 4 — Geen @JsonIgnore, geen @JsonManagedReference
+
+Die lossen Swagger symptomen op maar:
+	•	breken lazy loading
+	•	maken je API onvoorspelbaar
+	•	veroorzaken andere bugs later
+
+Gebruik ze niet.
+
+⸻
+
+Waarom DTO’s dit 100% oplossen
+
+Swagger werkt zo:
+
+Controller signature → ObjectMapper → JSON schema
+
+Als Swagger alleen DTO’s ziet:
+	•	geen entity graph
+	•	geen circular references
+	•	geen nested explosion
+	•	✔ duidelijke API contracten
