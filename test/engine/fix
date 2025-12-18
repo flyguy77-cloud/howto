@@ -111,3 +111,62 @@ Als Swagger alleen DTO’s ziet:
 	•	geen circular references
 	•	geen nested explosion
 	•	✔ duidelijke API contracten
+
+@Entity
+public class WorkflowEntity {
+
+    @Id
+    @GeneratedValue
+    private UUID id;
+
+    private String name;
+
+    @Embedded
+    private ScheduleConfigEmbeddable schedule;
+
+    @OneToMany(
+            mappedBy = "workflow",
+            cascade = CascadeType.ALL,
+            orphanRemoval = true
+    )
+    private List<WorkflowNodeEntity> nodes = new ArrayList<>();
+
+    @OneToMany(
+            mappedBy = "workflow",
+            cascade = CascadeType.ALL,
+            orphanRemoval = true
+    )
+    private List<WorkflowEdgeEntity> edges = new ArrayList<>();
+
+    public void addNode(WorkflowNodeEntity node) {
+        node.setWorkflow(this);     // parent wordt HIER gezet
+        nodes.add(node);
+    }
+
+    public void addEdge(WorkflowEdgeEntity edge) {
+        edge.setWorkflow(this);
+        edges.add(edge);
+    }
+}
+
+public WorkflowEntity toEntity(WorkflowRequestDto dto) {
+
+    WorkflowEntity wf = new WorkflowEntity();
+    wf.setName(dto.name());
+
+    if (dto.schedule() != null) {
+        wf.setSchedule(mapSchedule(dto.schedule()));
+    }
+
+    for (NodeDto nodeDto : dto.nodes()) {
+        WorkflowNodeEntity node = nodeDto.toNodeEntity(); // ✔️ toegestaan
+        wf.addNode(node);                                 // 🔥 parent hier
+    }
+
+    for (EdgeDto edgeDto : dto.edges()) {
+        WorkflowEdgeEntity edge = edgeDto.toEdgeEntity();
+        wf.addEdge(edge);
+    }
+
+    return wf;
+}
