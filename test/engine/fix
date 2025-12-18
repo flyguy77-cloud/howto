@@ -1,18 +1,3 @@
-Swagger serializeert JPA entities met bidirectionele relaties,
-waardoor Workflow → Node → Workflow → Node → … ontstaat.
-
-Dat is onvermijdelijk zolang Swagger entities ziet.
-
-⸻
-
-De enige structureel juiste oplossing
-
-Swagger mag NOOIT entities zien. Alleen DTO’s.
-
-Alles daarbuiten is een workaround, geen oplossing.
-
-⸻
-
 Stap-voor-stap fix (minimale impact)
 
 Stap 1 — Controllers mogen alleen DTO’s gebruiken
