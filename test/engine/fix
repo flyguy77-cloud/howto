@@ -112,6 +112,106 @@ Als Swagger alleen DTO’s ziet:
 	•	geen nested explosion
 	•	✔ duidelijke API contracten
 
+
+
+==========================
+
+NodeDto mag een toNodeEntity() hebben,
+maar mag NOOIT zelf bepalen bij welke workflow hij hoort.
+
+Dus:
+✔️ mappinglogica in DTO → prima
+❌ parent-relatie (workflow) in DTO → niet doen
+
+Ik laat je nu exact zien hoe dit er netjes uitziet met:
+	•	toNodeEntity()
+	•	fromNodeEntity()
+	•	zonder NOT NULL issues
+	•	zonder rommel in Swagger
+	•	zonder DDD-regels te breken
+
+⸻
+
+1️⃣ NodeDto met toNodeEntity() en fromNodeEntity()
+
+public record NodeDto(
+        String nodeId,
+        NodeKind kind,
+        NodeType type,
+        Map<String, Object> config
+) {
+
+    /** DTO → Entity (ZONDER workflow!) */
+    public WorkflowNodeEntity toNodeEntity() {
+        WorkflowNodeEntity e = new WorkflowNodeEntity();
+        e.setNodeId(this.nodeId);
+        e.setKind(this.kind);
+        e.setType(this.type);
+        e.setConfigJson(JsonUtils.toJson(this.config));
+        return e;
+    }
+
+    /** Entity → DTO */
+    public static NodeDto fromNodeEntity(WorkflowNodeEntity e) {
+        return new NodeDto(
+                e.getNodeId(),
+                e.getKind(),
+                e.getType(),
+                JsonUtils.fromJson(e.getConfigJson())
+        );
+    }
+}
+
+🔑 Belangrijk
+	•	Geen workflow
+	•	Geen workflowId
+	•	Geen constructor met workflow
+	•	Alleen node-eigen data
+
+⸻
+
+2️⃣ EdgeDto met toEdgeEntity() / fromEdgeEntity()
+
+public record EdgeDto(
+        String edgeId,
+        String fromNodeId,
+        String toNodeId
+) {
+
+    public WorkflowEdgeEntity toEdgeEntity() {
+        WorkflowEdgeEntity e = new WorkflowEdgeEntity();
+        e.setEdgeId(this.edgeId);
+        e.setFromNodeId(this.fromNodeId);
+        e.setToNodeId(this.toNodeId);
+        return e;
+    }
+
+    public static EdgeDto fromEdgeEntity(WorkflowEdgeEntity e) {
+        return new EdgeDto(
+                e.getEdgeId(),
+                e.getFromNodeId(),
+                e.getToNodeId()
+        );
+    }
+}
+
+
+⸻
+
+3️⃣ WorkflowRequestDto blijft simpel
+
+public record WorkflowRequestDto(
+        String name,
+        List<NodeDto> nodes,
+        List<EdgeDto> edges,
+        ScheduleConfigDto schedule
+) {}
+
+
+⸻
+
+4️⃣ WorkflowEntity (aggregate root)
+
 @Entity
 public class WorkflowEntity {
 
@@ -139,7 +239,7 @@ public class WorkflowEntity {
     private List<WorkflowEdgeEntity> edges = new ArrayList<>();
 
     public void addNode(WorkflowNodeEntity node) {
-        node.setWorkflow(this);     // parent wordt HIER gezet
+        node.setWorkflow(this);     // 🔥 parent wordt HIER gezet
         nodes.add(node);
     }
 
@@ -148,6 +248,11 @@ public class WorkflowEntity {
         edges.add(edge);
     }
 }
+
+
+⸻
+
+5️⃣ Workflow save-flow (DIT lost je probleem op)
 
 public WorkflowEntity toEntity(WorkflowRequestDto dto) {
 
@@ -170,3 +275,36 @@ public WorkflowEntity toEntity(WorkflowRequestDto dto) {
 
     return wf;
 }
+
+--------------------------------->>>>>>>>>
+
+✅ Dit moet je doen — expliciet, maar centraal
+public WorkflowEntity toWorkflowEntity() {
+
+    WorkflowEntity wf = new WorkflowEntity();
+    wf.setName(this.name());
+
+    // NODES
+    for (NodeDto nodeDto : nodes) {
+        WorkflowNodeEntity node = nodeDto.toNodeEntity();
+        wf.addNode(node); // 🔥 hier wordt workflow gezet
+    }
+
+    // EDGES
+    for (EdgeDto edgeDto : edges) {
+        WorkflowEdgeEntity edge = edgeDto.toEdgeEntity();
+        wf.addEdge(edge);
+    }
+
+    return wf;
+}
+
+En WorkflowEntity:
+public void addNode(WorkflowNodeEntity node) {
+    node.setWorkflow(this);
+    this.nodes.add(node);
+}
+
+👉 Als je ook maar één keer setNodes(...) gebruikt → bingo, bug.
+
+/////////////////
