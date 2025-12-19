@@ -262,28 +262,54 @@ public WorkflowEntity toEntity(WorkflowRequestDto dto) {
 }
 
 --------------------------------->>>>>>>>>
+Dit moet je doen in je ServiceImpl
 
-✅ Dit moet je doen — expliciet, maar centraal
-public WorkflowEntity toWorkflowEntity() {
+@Service
+@RequiredArgsConstructor
+public class WorkflowService {
 
-    WorkflowEntity wf = new WorkflowEntity();
-    wf.setName(this.name());
+    private final WorkflowRepository workflowRepo;
 
-    // NODES
-    for (NodeDto nodeDto : nodes) {
-        WorkflowNodeEntity node = nodeDto.toNodeEntity();
-        wf.addNode(node); // 🔥 hier wordt workflow gezet
+    public UUID create(WorkflowRequestDto dto) {
+
+        WorkflowEntity wf = dto.toWorkflowEntity(); // 👈 HIER
+
+        workflowRepo.save(wf);
+
+        return wf.getId();
     }
-
-    // EDGES
-    for (EdgeDto edgeDto : edges) {
-        WorkflowEdgeEntity edge = edgeDto.toEdgeEntity();
-        wf.addEdge(edge);
-    }
-
-    return wf;
 }
 
+WorkflowDto.fromEntity(entity)       // OK
+WorkflowRequestDto.toWorkflowEntity() // OK
+WorkflowDto.toWorkflowEntity()       // ❌
+
+
+✅ Dit moet je doen — expliciet, maar centraal IN de WORKFLOWREQUESTENTITY
+public record WorkflowRequestDto(
+    String name,
+    List<NodeDto> nodes,
+    List<EdgeDto> edges
+) {
+
+    public WorkflowEntity toWorkflowEntity() {
+
+        WorkflowEntity wf = new WorkflowEntity();
+        wf.setName(this.name);
+
+        for (NodeDto nodeDto : nodes) {
+            WorkflowNodeEntity node = nodeDto.toNodeEntity();
+            wf.addNode(node);
+        }
+
+        for (EdgeDto edgeDto : edges) {
+            WorkflowEdgeEntity edge = edgeDto.toEdgeEntity();
+            wf.addEdge(edge);
+        }
+
+        return wf;
+    }
+}
 En WorkflowEntity:
 public void addNode(WorkflowNodeEntity node) {
     node.setWorkflow(this);
