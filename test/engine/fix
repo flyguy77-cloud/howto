@@ -292,24 +292,32 @@ public record WorkflowRequestDto(
     List<EdgeDto> edges
 ) {
 
-    public WorkflowEntity toWorkflowEntity() {
+public WorkflowEntity toWorkflowEntity() {
 
-        WorkflowEntity wf = new WorkflowEntity();
-        wf.setName(this.name);
+    WorkflowEntity wf = new WorkflowEntity();
 
-        for (NodeDto nodeDto : nodes) {
-            WorkflowNodeEntity node = nodeDto.toNodeEntity();
-            wf.addNode(node);
-        }
+    // ── workflow metadata ─────────────────────
+    wf.setName(this.name());
+    wf.setStatus(WorkflowStatus.DRAFT);
+    wf.setCreatedAt(Instant.now());
+    wf.setUpdatedAt(Instant.now());
+    wf.setSchedule(this.schedule());
 
-        for (EdgeDto edgeDto : edges) {
-            WorkflowEdgeEntity edge = edgeDto.toEdgeEntity();
-            wf.addEdge(edge);
-        }
-
-        return wf;
+    // ── graph structuur ───────────────────────
+    for (NodeDto nodeDto : nodes) {
+        WorkflowNodeEntity node = nodeDto.toNodeEntity();
+        wf.addNode(node);     // zet workflow in node
     }
+
+    for (EdgeDto edgeDto : edges) {
+        WorkflowEdgeEntity edge = edgeDto.toEdgeEntity();
+        wf.addEdge(edge);    // zet workflow in edge
+    }
+
+    return wf;
 }
+}
+
 En WorkflowEntity:
 public void addNode(WorkflowNodeEntity node) {
     node.setWorkflow(this);
