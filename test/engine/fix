@@ -326,4 +326,62 @@ public void addNode(WorkflowNodeEntity node) {
 
 👉 Als je ook maar één keer setNodes(...) gebruikt → bingo, bug.
 
+
+------------
+
+UPDATE
+
+3️⃣ Builder-pattern (⚠️ alleen bij creatie, niet bij update)
+
+Een builder is niet geschikt voor updates in JPA.
+
+❌ Dit dus niet doen bij updates:
+wf = WorkflowEntity.builder()
+    .name(dto.name())
+    .schedule(dto.schedule())
+    .build();
+
+// OPTIONEEL
+@Entity
+public class WorkflowEntity {
+
+    public void updateMetadata(WorkflowRequestDto dto) {
+        this.name = dto.name();
+        this.schedule = dto.schedule();
+    }
+}
+
+// Service laag
+@Transactional <<----- aan te bevelen, meerdere transactie tegelijk
+public void update(UUID workflowId, WorkflowRequestDto dto) {
+
+    WorkflowEntity wf = workflowRepo.findById(workflowId).orElseThrow();
+
+    wf.setName(dto.name());
+    wf.setSchedule(dto.schedule());
+
+    Map<String, WorkflowNodeEntity> existing =
+        wf.getNodes().stream()
+          .collect(Collectors.toMap(
+              WorkflowNodeEntity::getNodeKey, <=== NodeKey is nodeId
+              Function.identity() <----- zelfde als node -> node
+          ));
+
+    wf.getNodes().clear();
+
+    for (NodeDto nodeDto : dto.nodes()) {
+
+        WorkflowNodeEntity node =
+            existing.getOrDefault(
+                nodeDto.nodeKey(),
+                new WorkflowNodeEntity()
+            );
+
+        node.setNodeKey(nodeDto.nodeKey());
+        node.apply(nodeDto);
+
+        wf.addNode(node); // zet workflow_id correct
+    }
+}
+
 /////////////////
