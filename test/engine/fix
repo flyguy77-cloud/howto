@@ -341,6 +341,7 @@ wf = WorkflowEntity.builder()
     .schedule(dto.schedule())
     .build();
 
+========
 // OPTIONEEL
 @Entity
 public class WorkflowEntity {
@@ -350,6 +351,15 @@ public class WorkflowEntity {
         this.schedule = dto.schedule();
     }
 }
+
+@Transactional
+public void update(UUID workflowId, WorkflowRequestDto dto) {
+    WorkflowEntity wf = workflowRepo.findById(workflowId).orElseThrow();
+    wf.updateMetadata(dto);
+
+    // daarna: nodes & edges merge logic
+}
+======
 
 // Service laag
 @Transactional <<----- aan te bevelen, meerdere transactie tegelijk
