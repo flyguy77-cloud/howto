@@ -394,4 +394,10 @@ public void update(UUID workflowId, WorkflowRequestDto dto) {
     }
 }
 
+public void apply(EdgeDto dto) {
+        this.fromNodeKey = dto.fromNodeKey();
+        this.toNodeKey = dto.toNodeKey();
+    }
+}
+
 /////////////////
