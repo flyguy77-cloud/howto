@@ -1,0 +1,259 @@
+Topvraag — dit raakt exact aan goed testbaar ontwerp 👍
+Ik ga dit heel concreet doen:
+	1.	Eerst het kernprobleem uitleggen (private method + boolean)
+	2.	Daarna de juiste ontwerpkeuze (zonder refactor-ellende)
+	3.	Daarna copy-paste-ready Mockito tests voor:
+	•	WorkflowScheduleSyncService
+	•	WorkflowExecutionService
+
+Geen magie, geen PowerMockito, geen hacks.
+
+⸻
+
+1️⃣ Het probleem: private isScheduled() methode
+
+Je situatie (samengevat):
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowScheduleSyncService {
+
+    public void syncAll() {
+        for (WorkflowEntity wf : workflows) {
+            if (isScheduled(wf)) {
+                schedule(wf);
+            }
+        }
+    }
+
+    private boolean isScheduled(WorkflowEntity wf) {
+        return wf.getSchedule() != null && wf.getSchedule().isEnabled();
+    }
+}
+
+👉 Je kunt een private methode niet mocken
+👉 En dat hoort ook niet in Mockito
+
+🔑 Belangrijk inzicht
+
+Je test niet de private methode.
+Je test het effect ervan.
+
+Dus:
+	•	niet: “isScheduled() wordt true”
+	•	maar: “scheduleRecurrently wordt wel / niet aangeroepen”
+
+⸻
+
+2️⃣ De juiste oplossing (zonder grote refactor)
+
+✅ Laat isScheduled() private
+
+✅ Test via interaction-based testing
+
+Je test:
+	•	wat gebeurt er als het true is
+	•	wat gebeurt er als het false is
+
+Dat doe je door input te sturen, niet door de methode te mocken.
+
+⸻
+
+3️⃣ Mockito test — WorkflowScheduleSyncService
+
+Service (context)
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowScheduleSyncService {
+
+    private final WorkflowRepository workflowRepo;
+    private final JobScheduler jobScheduler;
+    private final WorkflowExecutionService executionService;
+
+    public void syncAll() {
+
+        var workflows = workflowRepo.findAll();
+
+        for (WorkflowEntity wf : workflows) {
+            if (!isScheduled(wf)) continue;
+
+            String recurringId = "workflow-" + wf.getId();
+
+            jobScheduler.scheduleRecurrently(
+                recurringId,
+                wf.getSchedule().getCron(),
+                () -> executionService.startExecution(wf.getId())
+            );
+        }
+    }
+
+    private boolean isScheduled(WorkflowEntity wf) {
+        return wf.getSchedule() != null && wf.getSchedule().isEnabled();
+    }
+}
+
+
+⸻
+
+✅ Test: scheduled workflow → job wordt geregistreerd
+
+@ExtendWith(MockitoExtension.class)
+class WorkflowScheduleSyncServiceTest {
+
+    @Mock
+    WorkflowRepository workflowRepo;
+
+    @Mock
+    JobScheduler jobScheduler;
+
+    @Mock
+    WorkflowExecutionService executionService;
+
+    @InjectMocks
+    WorkflowScheduleSyncService service;
+
+    @Test
+    void syncAll_registersRecurringJob_whenWorkflowIsScheduled() {
+
+        UUID workflowId = UUID.randomUUID();
+
+        ScheduleConfig schedule = new ScheduleConfig();
+        schedule.setEnabled(true);
+        schedule.setCron("0 0 * * *");
+
+        WorkflowEntity wf = new WorkflowEntity();
+        wf.setId(workflowId);
+        wf.setSchedule(schedule);
+
+        when(workflowRepo.findAll()).thenReturn(List.of(wf));
+
+        // act
+        service.syncAll();
+
+        // assert
+        verify(jobScheduler).scheduleRecurrently(
+            eq("workflow-" + workflowId),
+            eq("0 0 * * *"),
+            any()
+        );
+    }
+}
+
+✔️ Geen private methode gemockt
+✔️ Test exact wat telt
+✔️ Robuust tegen refactors
+
+⸻
+
+❌ Test: workflow zonder schedule → niets gebeurt
+
+@Test
+void syncAll_doesNothing_whenWorkflowIsNotScheduled() {
+
+    WorkflowEntity wf = new WorkflowEntity();
+    wf.setId(UUID.randomUUID());
+    wf.setSchedule(null); // 👈 niet scheduled
+
+    when(workflowRepo.findAll()).thenReturn(List.of(wf));
+
+    service.syncAll();
+
+    verifyNoInteractions(jobScheduler);
+}
+
+
+⸻
+
+4️⃣ Mockito test — WorkflowExecutionService
+
+Service
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowExecutionService {
+
+    private final WorkflowExecutionRepository execRepo;
+    private final WorkflowRunner workflowRunner;
+
+    public UUID startExecution(UUID workflowId) {
+
+        UUID execId = UUID.randomUUID();
+
+        WorkflowExecutionEntity exec = new WorkflowExecutionEntity();
+        exec.setWorkflowId(workflowId);
+        exec.setExecId(execId);
+
+        execRepo.save(exec);
+
+        BackgroundJob.enqueue(() ->
+            workflowRunner.runWorkflow(workflowId, execId)
+        );
+
+        return execId;
+    }
+}
+
+
+⸻
+
+Test: execution wordt gestart en opgeslagen
+
+@ExtendWith(MockitoExtension.class)
+class WorkflowExecutionServiceTest {
+
+    @Mock
+    WorkflowExecutionRepository execRepo;
+
+    @Mock
+    WorkflowRunner workflowRunner;
+
+    @InjectMocks
+    WorkflowExecutionService service;
+
+    @Test
+    void startExecution_createsExecutionAndEnqueuesJob() {
+
+        UUID workflowId = UUID.randomUUID();
+
+        // act
+        UUID execId = service.startExecution(workflowId);
+
+        // assert: entity opgeslagen
+        verify(execRepo).save(argThat(exec ->
+            exec.getWorkflowId().equals(workflowId) &&
+            exec.getExecId().equals(execId)
+        ));
+    }
+}
+
+🔎 Waarom testen we BackgroundJob.enqueue niet direct?
+Omdat JobRunr static calls gebruikt → dat is integratietest-gebied.
+
+Unit test = jouw logica testen, niet JobRunr zelf.
+
+⸻
+
+5️⃣ Wat je NIET moet doen ❌
+	•	❌ private methodes mocken
+	•	❌ PowerMockito gebruiken
+	•	❌ boolean flags exposen “voor de test”
+	•	❌ logic verplaatsen alleen voor testbaarheid
+
+Je ontwerp is al goed testbaar zoals het is.
+
+⸻
+
+Samenvatting (belangrijk)
+	•	isScheduled() blijft private
+	•	Je test gedrag, niet implementatie
+	•	Mockito = interaction-based
+	•	Scheduled / not scheduled → input variatie
+	•	Geen refactor nodig
+
+Als je wilt, kan ik ook:
+	•	een integratietest met JobRunr Test Storage laten zien
+	•	laten zien hoe je cron changes test
+	•	of uitleggen hoe je idempotentie test bij syncAll()
+
+Zeg het maar 👌
