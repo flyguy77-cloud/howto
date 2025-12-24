@@ -1,0 +1,231 @@
+2.1 Update — nieuwe nodes worden toegevoegd
+
+@Test
+void update_withNewNodes_addsThemCorrectly() {
+    // GIVEN
+    UUID workflowId = UUID.randomUUID();
+
+    WorkflowEntity wf = new WorkflowEntity();
+    wf.setId(workflowId);
+    wf.setNodes(new ArrayList<>());
+    wf.setEdges(new ArrayList<>());
+
+    when(workflowRepo.findById(workflowId))
+            .thenReturn(Optional.of(wf));
+
+    NodeDto nodeDto = new NodeDto(
+            "node-1",
+            NodeKind.TASK,
+            NodeType.RUN_SCRIPT
+    );
+
+    WorkflowRequestDto dto = new WorkflowRequestDto(
+            "workflow-name",
+            null,
+            List.of(nodeDto),
+            List.of()
+    );
+
+    // WHEN
+    service.update(workflowId, dto);
+
+    // THEN
+    assertThat(wf.getNodes()).hasSize(1);
+
+    WorkflowNodeEntity node = wf.getNodes().get(0);
+    assertThat(node.getNodeKey()).isEqualTo("node-1");
+    assertThat(node.getWorkflow()).isSameAs(wf);
+}
+
+
+⸻
+
+2.2 Update — bestaande node wordt hergebruikt (niet vervangen)
+
+@Test
+void update_withExistingNode_updatesInsteadOfReplacing() {
+    // GIVEN
+    UUID workflowId = UUID.randomUUID();
+
+    WorkflowEntity wf = new WorkflowEntity();
+    wf.setId(workflowId);
+
+    WorkflowNodeEntity existingNode = new WorkflowNodeEntity();
+    existingNode.setNodeKey("node-1");
+    existingNode.setWorkflow(wf);
+
+    wf.setNodes(new ArrayList<>(List.of(existingNode)));
+    wf.setEdges(new ArrayList<>());
+
+    when(workflowRepo.findById(workflowId))
+            .thenReturn(Optional.of(wf));
+
+    NodeDto updatedDto = new NodeDto(
+            "node-1",
+            NodeKind.TASK,
+            NodeType.LOAD_SCRIPT
+    );
+
+    WorkflowRequestDto dto = new WorkflowRequestDto(
+            "updated-name",
+            null,
+            List.of(updatedDto),
+            List.of()
+    );
+
+    // WHEN
+    service.update(workflowId, dto);
+
+    // THEN
+    assertThat(wf.getNodes()).hasSize(1);
+    assertThat(wf.getNodes().get(0)).isSameAs(existingNode);
+    assertThat(existingNode.getType()).isEqualTo(NodeType.LOAD_SCRIPT);
+}
+
+
+⸻
+
+2.3 Update — oude nodes verdwijnen als ze niet meer in DTO zitten
+
+@Test
+void update_removesNodesNotPresentInDto() {
+    // GIVEN
+    UUID workflowId = UUID.randomUUID();
+
+    WorkflowEntity wf = new WorkflowEntity();
+    wf.setId(workflowId);
+
+    WorkflowNodeEntity oldNode = new WorkflowNodeEntity();
+    oldNode.setNodeKey("old-node");
+    oldNode.setWorkflow(wf);
+
+    wf.setNodes(new ArrayList<>(List.of(oldNode)));
+    wf.setEdges(new ArrayList<>());
+
+    when(workflowRepo.findById(workflowId))
+            .thenReturn(Optional.of(wf));
+
+    NodeDto newNode = new NodeDto(
+            "new-node",
+            NodeKind.TASK,
+            NodeType.RUN_SCRIPT
+    );
+
+    WorkflowRequestDto dto = new WorkflowRequestDto(
+            "workflow",
+            null,
+            List.of(newNode),
+            List.of()
+    );
+
+    // WHEN
+    service.update(workflowId, dto);
+
+    // THEN
+    assertThat(wf.getNodes())
+            .extracting(WorkflowNodeEntity::getNodeKey)
+            .containsExactly("new-node");
+}
+
+
+⸻
+
+WorkflowScheduleRegistrar tests
+
+Testklasse
+
+@ExtendWith(MockitoExtension.class)
+class WorkflowScheduleRegistrarTest {
+
+    @Mock
+    private JobScheduler jobScheduler;
+
+    @Mock
+    private WorkflowExecutionService executionService;
+
+    @InjectMocks
+    private WorkflowScheduleRegistrar registrar;
+}
+
+
+⸻
+
+3.1 Schedule uitgeschakeld → recurring job verwijderd
+
+@Test
+void syncSchedule_whenDisabled_deletesRecurringJob() {
+    // GIVEN
+    WorkflowEntity wf = new WorkflowEntity();
+    wf.setId(UUID.randomUUID());
+
+    ScheduleConfig schedule = new ScheduleConfig();
+    schedule.setEnabled(false);
+
+    wf.setSchedule(schedule);
+
+    // WHEN
+    registrar.syncSchedule(wf);
+
+    // THEN
+    verify(jobScheduler).delete("workflow-" + wf.getId());
+    verifyNoMoreInteractions(jobScheduler);
+}
+
+
+⸻
+
+3.2 Schedule actief → recurring job geregistreerd
+
+@Test
+void syncSchedule_whenEnabled_schedulesRecurringJob() {
+    // GIVEN
+    WorkflowEntity wf = new WorkflowEntity();
+    wf.setId(UUID.randomUUID());
+
+    ScheduleConfig schedule = new ScheduleConfig();
+    schedule.setEnabled(true);
+    schedule.setCron("0 0 * * *");
+
+    wf.setSchedule(schedule);
+
+    // WHEN
+    registrar.syncSchedule(wf);
+
+    // THEN
+    verify(jobScheduler).scheduleRecurrently(
+            eq("workflow-" + wf.getId()),
+            eq("0 0 * * *"),
+            any()
+    );
+}
+
+
+⸻
+
+WorkflowExecutionService tests
+
+@ExtendWith(MockitoExtension.class)
+class WorkflowExecutionServiceTest {
+
+    @Mock
+    private WorkflowRepository workflowRepo;
+
+    @InjectMocks
+    private WorkflowExecutionService service;
+}
+
+
+⸻
+
+4.1 startExecution → enqueue job & return execId
+
+@Test
+void startExecution_enqueuesJobAndReturnsExecId() {
+    // GIVEN
+    UUID workflowId = UUID.randomUUID();
+
+    // WHEN
+    UUID execId = service.startExecution(workflowId);
+
+    // THEN
+    assertThat(execId).
