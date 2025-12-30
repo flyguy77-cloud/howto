@@ -116,8 +116,24 @@
 
         return execId;
     }
-	}
 
+	    public void markFinished(UUID execId) {
+        execRepo.findByExecId(execId).ifPresent(exec -> {
+            exec.setStatus(WorkflowExecutionStatus.SUCCEEDED);
+            exec.setFinishedAt(Instant.now());
+            execRepo.save(exec);
+        });
+    }
+
+    public void markFailed(UUID execId, String reason) {
+        execRepo.findByExecId(execId).ifPresent(exec -> {
+            exec.setStatus(WorkflowExecutionStatus.FAILED);
+            exec.setErrorMessage(reason);
+            exec.setFinishedAt(Instant.now());
+            execRepo.save(exec);
+        });
+    }
+	}
 
 
 	@Service
@@ -186,27 +202,35 @@
 
 	@Service
 	@RequiredArgsConstructor
-
 	public class WorkflowNodeExecutor {
-    private final JobExecutionService jobExecService;
-
-    public void execute(NodeEntity node, UUID workflowExecId, UUID workflowId) {
-        WorkflowNodeExecutionRequest req =
-                new WorkflowNodeExecutionRequest(
-                        workflowExecId,
-                        workflowId,
-                        node.getId(),
-                        node.getType(),
-                        node.getParameters()
-                );
-
-        switch (node.getType()) {
-            case LOAD_SCRIPT -> jobExecService.executeLoadScript(req);
-            case RUN_SCRIPT  -> jobExecService.executeRunScript(req);
-            case GENERATE_REPORT -> jobExecService.executeReport(req);
-            case END -> { /* noop */ }
-        }
-    }
+	
+	    private final JobExecutionService jobExecService;
+	    private final WorkflowExecutionService workflowExecService;
+	
+	    public void execute(NodeEntity node, UUID workflowExecId) {
+	
+	        switch (node.getType()) {
+	
+	            case RUN_SCRIPT -> {
+	                RunScriptNodeRequestDto dto =
+	                        new RunScriptNodeRequestDto(
+	                                node.getScript(),
+	                                node.getImage(),
+	                                node.getArgs(),
+	                                node.getEnv()
+	                        );
+	
+	                jobExecService.executeScriptJobInternal(dto, workflowExecId);
+	            }
+	
+	            case END -> {
+	                workflowExecService.markFinished(workflowExecId);
+	            }
+	
+	            case LOAD_SCRIPT, GENERATE_REPORT ->
+	                    throw new NodeTypeNotSupportedException(node.getType());
+	        }
+	    }
 	}
 	
 	@Component
