@@ -7,7 +7,7 @@
         executeScriptJobInternal(dto, execId);
 
         return execId;
-    }
+}
 
 
     public void executeScriptJobInternal(
@@ -37,7 +37,7 @@
                 k8sJob.getMetadata().getUid()
         );
 	  }
-	}
+}
 
 
 	@Service
@@ -62,7 +62,7 @@
 		// - GEEN nieuwe execId generatie
 		jobExecutionService.executeScriptJobInternal(dto, workflowExecId);
 	  }
-	}
+}
 
 
 	@Service
@@ -90,7 +90,7 @@
 			);
 		}
       }
-	}
+}
 
 
 	@Service
@@ -135,7 +135,7 @@
             execRepo.save(exec);
         });
      }
-	}
+}
 
 
 	@Service
@@ -173,12 +173,14 @@
 	
 	        enqueueNode(workflowId, firstExecutable, execId);
 	    }
+
 	
 	    private void enqueueNode(UUID workflowId, UUID nodeId, UUID execId) {
 	        BackgroundJob.enqueue(() ->
 	                runNode(workflowId, nodeId, execId)
 	        );
 	    }
+
 
 		public void runNode(UUID workflowId, UUID nodeId, UUID execId) {
 	
@@ -204,7 +206,7 @@
 	
 	        enqueueNode(workflowId, nextExecutable, execId);
 	    }
-	  }
+}
 
 		HELPERS:
 		
@@ -253,7 +255,7 @@
 	        // skip non-executable node (bv. LOAD_SCRIPT)
 	        current = candidateId;
 	    }
-	}
+}
 
 
 	@Service
@@ -287,7 +289,7 @@
 	                    throw new NodeTypeNotSupportedException(node.getType());
 	        }
 		}
-	}
+}
 
 
 	public class GraphModel {
@@ -310,7 +312,7 @@
     public List<UUID> getStartNodes() {
         return startNodes;
     }
-  }
+}
 
 	
 	@Component
@@ -346,4 +348,4 @@
 	                List.copyOf(startNodes)
 	        );
 	    }
-	}
+}
