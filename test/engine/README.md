@@ -122,42 +122,65 @@
 
 	@Service
 	@RequiredArgsConstructor
-
 	public class WorkflowRunner {
-    private final WorkflowRepository wfRepo;
-    private final WorkflowNodeRepository nodeRepo;
-    private final GraphBuilder graphBuilder;
-    private final WorkflowNodeExecutor nodeExecutor;
+	
+	    private final WorkflowRepository wfRepo;
+	    private final WorkflowNodeRepository nodeRepo;
+	    private final GraphBuilder graphBuilder;
+	    private final WorkflowNodeExecutor nodeExecutor;
+	
+	    public void runWorkflow(UUID workflowId, UUID execId) {
+	
+	        WorkflowEntity wf = wfRepo.findById(workflowId)
+	                .orElseThrow(() -> new IllegalStateException("Workflow not found"));
+	
+	        GraphModel graph = graphBuilder.build(wf);
+	
+	        if (graph.getStartNodes().size() != 1) {
+	            throw new IllegalStateException("Workflow must have exactly one START node");
+	        }
+	
+	        UUID startNodeId = graph.getStartNodes().get(0);
+	
+	        BackgroundJob.enqueue(() ->
+	                runNode(workflowId, startNodeId, execId)
+	        );
+	    }
 
-    public void runWorkflow(UUID workflowId, UUID execId) {
-
-        WorkflowEntity wf = wfRepo.findById(workflowId).orElseThrow();
-        GraphModel graph = graphBuilder.build(wf);
-
-        UUID startNodeId = graph.getStartNodes().get(0);
-
-        BackgroundJob.enqueue(() ->
-                runNode(workflowId, startNodeId, execId)
-        );
-    }
-
-    public void runNode(UUID workflowId, UUID nodeId, UUID execId) {
-        NodeEntity node = nodeRepo.findById(nodeId).orElseThrow();
-
-        nodeExecutor.execute(node, execId);
-
-        WorkflowEntity wf = wfRepo.findById(workflowId).orElseThrow();
-        GraphModel graph = graphBuilder.build(wf);
-
-        List<UUID> next = graph.getNext().get(nodeId);
-        if (next == null || next.isEmpty()) return; // END
-
-        UUID nextNodeId = next.get(0); // MVP: sequentieel
-
-        BackgroundJob.enqueue(() ->
-                runNode(workflowId, nextNodeId, execId)
-        );
-    }
+	    public void runNode(UUID workflowId, UUID nodeId, UUID execId) {
+	
+	        NodeEntity node = nodeRepo.findById(nodeId)
+	                .orElseThrow(() -> new IllegalStateException("Node not found"));
+	
+	        // 1️⃣ execute node (BLOCKING until done)
+	        nodeExecutor.execute(node, execId);
+	
+	        // 2️⃣ load graph again (safe & simple)
+	        WorkflowEntity wf = wfRepo.findById(workflowId)
+	                .orElseThrow();
+	
+	        GraphModel graph = graphBuilder.build(wf);
+	
+	        // 3️⃣ determine next node(s)
+	        List<UUID> next = graph.getNext().get(nodeId);
+	
+	        if (next == null || next.isEmpty()) {
+	            return; // END of workflow
+	        }
+	
+	        if (next.size() > 1) {
+	            throw new IllegalStateException(
+	                    "Parallel nodes not supported in MVP"
+	            );
+	        }
+	
+	        UUID nextNodeId = next.get(0);
+	
+	        // 4️⃣ enqueue next step
+	        BackgroundJob.enqueue(() ->
+	                runNode(workflowId, nextNodeId, execId)
+	        );
+	    }
 	}
 
 
@@ -185,31 +208,40 @@
         }
     }
 	}
-
+	
 	@Component
-
 	public class GraphBuilder {
-
-    public GraphModel build(WorkflowEntity wf) {
-
-        Map<UUID, List<UUID>> nextMap = new HashMap<>();
-
-        for (NodeEntity node : wf.getNodes()) {
-            List<UUID> nextIds = wf.getEdges().stream()
-                    .filter(e -> e.getSourceNodeId().equals(node.getId()))
-                    .map(EdgeEntity::getTargetNodeId)
-                    .toList();
-
-            nextMap.put(node.getId(), nextIds);
-        }
-
-        List<UUID> startNodes = wf.getNodes().stream()
-                .filter(n -> n.getKind() == NodeKind.START)
-                .map(NodeEntity::getId)
-                .toList();
-
-        return new GraphModel(nextMap, startNodes);
-    }
+	
+	    public GraphModel build(WorkflowEntity wf) {
+	
+	        Map<UUID, List<UUID>> next = new HashMap<>();
+	        Map<UUID, List<UUID>> incoming = new HashMap<>();
+	
+	        for (NodeEntity node : wf.getNodes()) {
+	            next.put(node.getId(), new ArrayList<>());
+	            incoming.put(node.getId(), new ArrayList<>());
+	        }
+	
+	        for (EdgeEntity edge : wf.getEdges()) {
+	            next.get(edge.getSourceNodeId()).add(edge.getTargetNodeId());
+	            incoming.get(edge.getTargetNodeId()).add(edge.getSourceNodeId());
+	        }
+	
+	        List<UUID> startNodes = wf.getNodes().stream()
+	                .filter(n -> n.getKind() == NodeKind.START)
+	                .map(NodeEntity::getId)
+	                .toList();
+	
+	        if (startNodes.isEmpty()) {
+	            throw new IllegalStateException("Workflow has no START node");
+	        }
+	
+	        return new GraphModel(
+	                Map.copyOf(next),
+	                Map.copyOf(incoming),
+	                List.copyOf(startNodes)
+	        );
+	    }
 	}
 
 
