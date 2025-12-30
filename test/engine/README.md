@@ -36,58 +36,60 @@
                 execId,
                 k8sJob.getMetadata().getUid()
         );
-    }
-  }
+	  }
+	}
 
-  @Service
-  @RequiredArgsConstructor
-  public class WorkflowNodeExecutor {
 
-    private final JobExecutionService jobExecutionService;
+	@Service
+	@RequiredArgsConstructor
+	public class WorkflowNodeExecutor {
+	
+	private final JobExecutionService jobExecutionService;
+	
+	public void execute(NodeEntity node, UUID workflowExecId) {
+	
+		// DTO wordt hier gewoon gebouwd
+		// geen magie, geen mapper vereist
+		RunScriptNodeRequestDto dto = new RunScriptNodeRequestDto(
+				node.getScript(),
+				node.getImage(),
+				node.getArgs(),
+				node.getEnv()
+		);
+	
+		// BELANGRIJK:
+		// - execId komt van workflow
+		// - GEEN nieuwe execId generatie
+		jobExecutionService.executeScriptJobInternal(dto, workflowExecId);
+	  }
+	}
 
-    public void execute(NodeEntity node, UUID workflowExecId) {
 
-        // DTO wordt hier gewoon gebouwd
-        // geen magie, geen mapper vereist
-        RunScriptNodeRequestDto dto = new RunScriptNodeRequestDto(
-                node.getScript(),
-                node.getImage(),
-                node.getArgs(),
-                node.getEnv()
-        );
-
-        // BELANGRIJK:
-        // - execId komt van workflow
-        // - GEEN nieuwe execId generatie
-        jobExecutionService.executeScriptJobInternal(dto, workflowExecId);
-    }
-  }
-
-  @Service
-  @RequiredArgsConstructor
-
+	@Service
+	@RequiredArgsConstructor
+	
 	public class WorkflowScheduleSyncService {
-    private final WorkflowRepository workflowRepo;
-    private final JobScheduler jobScheduler;
-    private final WorkflowExecutionService executionService;
-
-    public void syncAll() {
-
-        var workflows = workflowRepo.findAllWithEnabledSchedule();
-
-        for (WorkflowEntity wf : workflows) {
-            var schedule = wf.getSchedule();
-            if (schedule == null || !schedule.isEnabled()) continue;
-
-            String recurringId = "workflow-" + wf.getId();
-
-            jobScheduler.scheduleRecurrently(
-                    recurringId,
-                    schedule.getCron(),
-                    () -> executionService.startExecution(wf.getId())
-            );
-        }
-    }
+	private final WorkflowRepository workflowRepo;
+	private final JobScheduler jobScheduler;
+	private final WorkflowExecutionService executionService;
+	
+	public void syncAll() {
+	
+		var workflows = workflowRepo.findAllWithEnabledSchedule();
+	
+		for (WorkflowEntity wf : workflows) {
+			var schedule = wf.getSchedule();
+			if (schedule == null || !schedule.isEnabled()) continue;
+	
+			String recurringId = "workflow-" + wf.getId();
+	
+			jobScheduler.scheduleRecurrently(
+					recurringId,
+					schedule.getCron(),
+					() -> executionService.startExecution(wf.getId())
+			);
+		}
+      }
 	}
 
 
@@ -132,7 +134,7 @@
             exec.setFinishedAt(Instant.now());
             execRepo.save(exec);
         });
-    }
+     }
 	}
 
 
@@ -196,7 +198,7 @@
 	        BackgroundJob.enqueue(() ->
 	                runNode(workflowId, nextNodeId, execId)
 	        );
-	    }
+		}
 	}
 
 
@@ -230,7 +232,7 @@
 	            case LOAD_SCRIPT, GENERATE_REPORT ->
 	                    throw new NodeTypeNotSupportedException(node.getType());
 	        }
-	    }
+		}
 	}
 	
 	@Component
@@ -267,5 +269,3 @@
 	        );
 	    }
 	}
-
-
