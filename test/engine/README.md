@@ -155,50 +155,104 @@
 	        GraphModel graph = graphBuilder.build(wf);
 	
 	        if (graph.getStartNodes().size() != 1) {
-	            throw new IllegalStateException("Workflow must have exactly one START node");
+	            throw new IllegalStateException(
+	                    "Workflow must have exactly one START node"
+	            );
 	        }
 	
 	        UUID startNodeId = graph.getStartNodes().get(0);
 	
+	        UUID firstExecutable =
+	                findNextExecutableNode(startNodeId, graph, wf);
+	
+	        if (firstExecutable == null) {
+	            throw new IllegalStateException(
+	                    "No executable node reachable from START"
+	            );
+	        }
+	
+	        enqueueNode(workflowId, firstExecutable, execId);
+	    }
+	
+	    private void enqueueNode(UUID workflowId, UUID nodeId, UUID execId) {
 	        BackgroundJob.enqueue(() ->
-	                runNode(workflowId, startNodeId, execId)
+	                runNode(workflowId, nodeId, execId)
 	        );
 	    }
 
-	    public void runNode(UUID workflowId, UUID nodeId, UUID execId) {
+		public void runNode(UUID workflowId, UUID nodeId, UUID execId) {
 	
 	        NodeEntity node = nodeRepo.findById(nodeId)
 	                .orElseThrow(() -> new IllegalStateException("Node not found"));
 	
-	        // 1️⃣ execute node (BLOCKING until done)
+	        // 1. execute current node (blocking)
 	        nodeExecutor.execute(node, execId);
 	
-	        // 2️⃣ load graph again (safe & simple)
+	        // 2. reload graph (safe & stateless)
 	        WorkflowEntity wf = wfRepo.findById(workflowId)
 	                .orElseThrow();
 	
 	        GraphModel graph = graphBuilder.build(wf);
 	
-	        // 3️⃣ determine next node(s)
-	        List<UUID> next = graph.getNext().get(nodeId);
+	        // 3. find next executable node
+	        UUID nextExecutable =
+	                findNextExecutableNode(nodeId, graph, wf);
+	
+	        if (nextExecutable == null) {
+	            return; // workflow finished (END node was executed)
+	        }
+	
+	        enqueueNode(workflowId, nextExecutable, execId);
+	    }
+	  }
+
+		HELPERS:
+		
+		private boolean isExecutable(NodeEntity node) {
+    		return switch (node.getType()) {
+        case RUN_SCRIPT, END -> true;
+        default -> false; // START, LOAD_SCRIPT, etc.
+    	};
+	  }
+
+
+		private UUID findNextExecutableNode(
+	        UUID fromNodeId,
+	        GraphModel graph,
+	        WorkflowEntity wf
+		) {
+	    UUID current = fromNodeId;
+	
+	    while (true) {
+	
+	        List<UUID> next = graph.getNext().get(current);
 	
 	        if (next == null || next.isEmpty()) {
-	            return; // END of workflow
+	            return null; // einde van de workflow
 	        }
 	
 	        if (next.size() > 1) {
 	            throw new IllegalStateException(
-	                    "Parallel nodes not supported in MVP"
+	                    "Parallel branches not supported in MVP"
 	            );
 	        }
 	
-	        UUID nextNodeId = next.get(0);
+	        UUID candidateId = next.get(0);
 	
-	        // 4️⃣ enqueue next step
-	        BackgroundJob.enqueue(() ->
-	                runNode(workflowId, nextNodeId, execId)
-	        );
-		}
+	        NodeEntity candidate = wf.getNodes().stream()
+	                .filter(n -> n.getId().equals(candidateId))
+	                .findFirst()
+	                .orElseThrow(() ->
+	                        new IllegalStateException("Node not found: " + candidateId)
+	                );
+	
+	        if (isExecutable(candidate)) {
+	            return candidateId;
+	        }
+	
+	        // skip non-executable node (bv. LOAD_SCRIPT)
+	        current = candidateId;
+	    }
 	}
 
 
@@ -234,6 +288,30 @@
 	        }
 		}
 	}
+
+
+	public class GraphModel {
+
+    private final Map<UUID, List<UUID>> next;
+    private final List<UUID> startNodes;
+
+    public GraphModel(
+            Map<UUID, List<UUID>> next,
+            List<UUID> startNodes
+    ) {
+        this.next = next;
+        this.startNodes = startNodes;
+    }
+
+    public Map<UUID, List<UUID>> getNext() {
+        return next;
+    }
+
+    public List<UUID> getStartNodes() {
+        return startNodes;
+    }
+  }
+
 	
 	@Component
 	public class GraphBuilder {
