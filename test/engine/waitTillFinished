@@ -204,6 +204,6 @@ public class JobStatusWatcher {
 CompletableFuture<JobStatus> future = registry.register(execId);
 
 JobStatus status = future
-    .orTimeout(30, MINUTES)
-    .exceptionally(ex -> jobRepo.getStatus(execId))
+    .orTimeout(30, MINUTES)    <<--- beter zonder harde timeout, of laat k8s de timeout regelen!
+    .exceptionally(ex -> jobRepo.getStatus(execId))     <<--- dan zou deze ook niet nodig meer zijn
     .join();
