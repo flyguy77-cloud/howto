@@ -1,6 +1,22 @@
 // Polling, perfect voor sequentieel uitvoeren. Robuust in productie, voor nu de voorkeur
 // of hybride zie helemaal onderaan future icm database blijft werkelijkheid.
 
+
+@Service
+@RequiredArgsConstructor
+public class JobExecutionService {
+
+    public UUID executeScriptJob(RunScriptNodeRequestDto dto) {
+
+        UUID execId = UUID.randomUUID();
+
+        executeScriptJobInternal(dto, execId);  <<-- verzoek komt van buiten, dus execId moet gegnereerd worden eerst
+
+        return execId;
+    }
+}
+
+
 @Service
 @RequiredArgsConstructor
 public class JobExecutionService {
@@ -12,10 +28,7 @@ public class JobExecutionService {
     @Value("${kubernetes.client.namespace}")
     private String namespace;
 
-    public void executeScriptJobInternal(
-            RunScriptNodeRequestDto dto,
-            UUID execId
-    ) {
+    public void executeScriptJobInternal(RunScriptNodeRequestDto dto, UUID execId) {  <<-- voor jobRunr exec dat al een execId heeft
 
         // 1. init DB record
         JobExecutionEntity job = new JobExecutionEntity();
