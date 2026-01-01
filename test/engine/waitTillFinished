@@ -1,0 +1,196 @@
+// Polling, perfect voor sequentieel uitvoeren. Robuust in productie, voor nu de voorkeur
+// of hybride zie helemaal onderaan future icm database blijft werkelijkheid.
+
+@Service
+@RequiredArgsConstructor
+public class JobExecutionService {
+
+    private final JobExecutionRepository jobRepo;
+    private final KubernetesClient client;
+    private final JobMonitor jobMonitor;
+
+    @Value("${kubernetes.client.namespace}")
+    private String namespace;
+
+    public void executeScriptJobInternal(
+            RunScriptNodeRequestDto dto,
+            UUID execId
+    ) {
+
+        // 1. init DB record
+        JobExecutionEntity job = new JobExecutionEntity();
+        job.setId(execId);
+        job.setStatus(JobExecutionStatus.PENDING);
+        jobRepo.save(job);
+
+        // 2. create k8s job
+        Job k8sJob = buildKubernetesJob(dto, execId);
+
+        client.batch().v1().jobs()
+                .inNamespace(namespace)
+                .resource(k8sJob)
+                .create();
+
+        // 3. start watchers
+        jobMonitor.start(
+                namespace,
+                k8sJob.getMetadata().getName(),
+                execId,
+                k8sJob.getMetadata().getUid()
+        );
+
+        // 4. WAIT (blocking)
+        waitUntilJobFinished(execId);         <<---- wacht tot de job klaar is, ga dan door met de volgende (sequentieel)
+    }
+}
+
+private void waitUntilJobFinished(UUID execId) {
+
+    while (true) {
+        JobExecutionStatus status = jobRepo.findById(execId)
+                .map(JobExecutionEntity::getStatus)
+                .orElseThrow();
+
+        if (status == JobExecutionStatus.SUCCEEDED) {
+            return;
+        }
+
+        if (status == JobExecutionStatus.FAILED) {
+            throw new IllegalStateException(
+                "Job failed: " + execId
+            );
+        }
+
+        try {
+            Thread.sleep(1000); // 1s poll     <<--- dit is de database poller, dat per 1s checkt. 1s is prima, 5s is to lang wachten
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted", e);
+        }
+    }
+}
+
+
+// Completable future, voor parallele verwerking is dit het startpunt maar kan ook als poller gebruikt worden
+
+@Component
+public class JobCompletionRegistry {
+
+    private final ConcurrentMap<UUID, CompletableFuture<JobExecutionStatus>> futures =
+            new ConcurrentHashMap<>();
+
+    public CompletableFuture<JobExecutionStatus> register(UUID execId) {
+        CompletableFuture<JobExecutionStatus> future = new CompletableFuture<>();
+        futures.put(execId, future);
+        return future;
+    }
+
+    public void complete(UUID execId, JobExecutionStatus status) {
+        CompletableFuture<JobExecutionStatus> future = futures.remove(execId);
+        if (future != null) {
+            future.complete(status);
+        }
+    }
+
+    public void fail(UUID execId, Throwable t) {
+        CompletableFuture<JobExecutionStatus> future = futures.remove(execId);
+        if (future != null) {
+            future.completeExceptionally(t);
+        }
+    }
+}
+
+// JobExecutionService met future
+
+@Service
+@RequiredArgsConstructor
+public class JobExecutionService {
+
+    private final JobCompletionRegistry registry;
+
+    public void executeScriptJobInternal(
+            RunScriptNodeRequestDto dto,
+            UUID execId
+    ) {
+
+        CompletableFuture<JobExecutionStatus> future =
+                registry.register(execId);
+
+        startKubernetesJob(dto, execId);
+
+        // BLOCK until watcher completes it
+        JobExecutionStatus status = future.join();
+
+        if (status == JobExecutionStatus.FAILED) {
+            throw new IllegalStateException("Job failed " + execId);
+        }
+    }
+}
+
+// Afronden van future
+
+@Component
+@RequiredArgsConstructor
+public class JobStatusWatcher {
+
+    private final KubernetesClient client;
+    private final JobStatusService statusService;
+    private final JobCompletionRegistry registry;
+
+    public Watch start(
+            String namespace,
+            String jobName,
+            UUID execId,
+            String jobUid
+    ) {
+
+        return client.batch().v1().jobs()
+            .inNamespace(namespace)
+            .withName(jobName)
+            .watch(new Watcher<>() {
+
+                @Override
+                public void eventReceived(Action action, Job job) {
+
+                    if (!job.getMetadata().getUid().equals(jobUid)) return;
+
+                    JobExecutionStatus mapped = mapStatus(job);
+                    statusService.updateStatus(execId, mapped, null);
+
+                    if (mapped == JobExecutionStatus.SUCCEEDED ||
+                        mapped == JobExecutionStatus.FAILED) {
+
+                        registry.complete(execId, mapped);
+                        close(); // Fabric8 Watch close
+                    }
+                }
+
+                @Override
+                public void onClose(WatcherException cause) {
+                    if (cause != null) {
+                        registry.fail(execId, cause);
+                    }
+                }
+            });
+    }
+}
+
+// Let op! Voor Completable Futures is Life Cycle management nodig. Futures zijn memory based. 
+// Wat als de app restart, dan is de state complete weg, jobs worden niet opgeruimt
+// Extra code als:
+//
+// if (future != null && !future.isDone()) {
+//    future.complete(status);
+// }
+//
+// is nodig, niet moeilijk maar wel extra verantwoordelijkheid
+
+
+
+// Hybride aanpak:
+CompletableFuture<JobStatus> future = registry.register(execId);
+
+JobStatus status = future
+    .orTimeout(30, MINUTES)
+    .exceptionally(ex -> jobRepo.getStatus(execId))
+    .join();
