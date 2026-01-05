@@ -1,0 +1,44 @@
+
+Samenvattend: de juiste vorm voor jou
+
+() -> jobexecservice.start(workflowid) <--- is een afkeur binnen jobrunr >= versie 7
+
+✔️ Recurring job
+	•	kort
+	•	non-blocking
+	•	alleen trigger
+
+✔️ WorkflowExecutionService
+	•	maakt workflowExecId
+	•	enqueue’t WorkflowRunner
+	•	returnt meteen
+
+✔️ WorkflowRunner
+	•	doet het zware werk
+	•	sequentieel / parallel
+	•	wacht op nodes (polling / future)
+
+⸻
+
+Concrete code (zoals het moet)
+
+WorkflowScheduleRegistrar
+
+jobScheduler.scheduleRecurrently(
+    "workflow-" + workflowId,
+    cron,
+    workflowStartJob::triggerWorkflow,
+    workflowId
+);
+
+@Component
+@RequiredArgsConstructor
+public class WorkflowStartJob {
+
+    private final WorkflowExecutionService executionService;
+
+    @Job(name = "Trigger workflow execution")
+    public void triggerWorkflow(UUID workflowId) {
+        executionService.startExecution(workflowId);
+    }
+}
