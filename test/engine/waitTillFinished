@@ -208,7 +208,23 @@ JobStatus status = future
     .exceptionally(ex -> jobRepo.getStatus(execId))     <<--- dan zou deze ook niet nodig meer zijn
     .join();
 
+
+
 =========
+
+De kern van het probleem (in één zin)
+
+gebruikt één type execId voor twee verschillende verantwoordelijkheden:
+	•	workflow-level executie
+	•	node/job-level executie
+
+Daardoor:
+	•	watchers kijken in de verkeerde tabel
+	•	logs/status worden aan het verkeerde record gekoppeld
+	•	je verliest referentiële samenhang
+
+⸻
+
 De juiste mentale scheiding (dit is de sleutel)
 
 twee soorten executies. Ze mogen nooit dezelfde identifier delen.
@@ -232,4 +248,168 @@ twee soorten executies. Ze mogen nooit dezelfde identifier delen.
 	•	JobExecutionService
 	•	Fabric8 watchers (status/log/pod)
 	•	K8s Job metadata
+
+👉 Dit zijn twee totaal verschillende concepten.
+
+⸻
+
+Wat gaat er nu mis
+
+“de podWatcher wil zijn log niet wegschrijven omdat deze execId niet in de tabel gevonden kan worden”
+
+Dat betekent vrijwel altijd:
+	•	watcher gebruikt workflowExecId
+	•	repository verwacht jobExecId
+	•	of andersom
+
+👉 Klassieke split brain.
+
+⸻
+
+De structurele oplossing (zonder refactor-hel)
+
+✳️ Regel 1 — Workflow genereert alléén workflowExecId
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowExecutionService {
+
+    public UUID startExecution(UUID workflowId) {
+
+        UUID workflowExecId = UUID.randomUUID();
+
+        // sla WorkflowExecutionEntity op
+        // status = RUNNING
+
+        BackgroundJob.enqueue(() ->
+            workflowRunner.runWorkflow(workflowId, workflowExecId)
+        );
+
+        return workflowExecId;
+    }
+}
+
+👉 WorkflowExecutionService kent géén jobExecId.
+
+⸻
+
+✳️ Regel 2 — Node-executie genereert zélf een jobExecId
+
+En koppelt die expliciet aan de workflow.
+
+@Service
+@RequiredArgsConstructor
+public class JobExecutionService {
+
+    public UUID executeScriptJobInternal(
+            RunScriptNodeRequestDto dto,
+            UUID workflowExecId,
+            UUID nodeId
+    ) {
+
+        UUID jobExecId = UUID.randomUUID();
+
+        JobExecutionEntity job = new JobExecutionEntity();
+        job.setId(jobExecId);
+        job.setWorkflowExecId(workflowExecId); // 🔥 BELANGRIJK
+        job.setNodeId(nodeId);
+        job.setStatus(PENDING);
+
+        jobRepo.save(job);
+
+        // start K8s job + watchers met jobExecId
+        startK8sJob(dto, jobExecId);
+
+        return jobExecId;
+    }
+}
+
+👉 Watchers gebruiken altijd jobExecId.
+👉 WorkflowRunner gebruikt altijd workflowExecId.
+
+⸻
+
+Cruciaal: watchers mogen NOOIT workflowExecId gebruiken
+
+❌ FOUT (wat nu gebeurt)
+
+jobMonitor.start(namespace, jobName, workflowExecId, jobUid);
+
+✅ GOED
+
+jobMonitor.start(namespace, jobName, jobExecId, jobUid);
+
+Want:
+	•	logs/status horen bij job_execution
+	•	niet bij workflow_execution
+
+⸻
+
+Hoe de WorkflowRunner dit netjes verbindt
+
+public void runNode(UUID workflowId, UUID workflowExecId, UUID nodeId) {
+
+    NodeEntity node = nodeRepo.findById(nodeId).orElseThrow();
+
+    UUID jobExecId =
+        jobExecutionService.executeScriptJobInternal(
+            mapNodeToDto(node),
+            workflowExecId,
+            nodeId
+        );
+
+    // ⏳ wacht tot deze job klaar is (polling / future)
+    waitUntilJobFinished(jobExecId);
+
+    // daarna → volgende node
+}
+
+👉 Workflow wacht op job,
+👉 job weet bij welke workflow hij hoort,
+👉 watchers zijn volledig lokaal per job.
+
+⸻
+
+Datamodel (dit maakt alles stabiel)
+
+WorkflowExecutionEntity
+
+id (workflowExecId)
+workflowId
+status
+startedAt
+finishedAt
+
+JobExecutionEntity
+
+id (jobExecId)
+workflowExecId  // FK
+nodeId
+status
+logs
+startedAt
+finishedAt
+
+Zo kun je:
+	•	alle jobs van een workflow ophalen
+	•	logs per node tonen
+	•	workflow-status afleiden van jobs
+
+⸻
+
+Waarom dit jouw probleem oplost
+
+✔ Geen execId-verwarring meer
+✔ Watchers vinden altijd hun record
+✔ Logs worden altijd geschreven
+✔ Workflow & jobs zijn los gekoppeld
+✔ Klaar voor parallel later
+
+⸻
+
+Belangrijk inzicht (onthouden!)
+
+WorkflowExecId = orchestratie
+
+JobExecId = uitvoering
 
