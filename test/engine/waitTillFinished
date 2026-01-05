@@ -207,3 +207,29 @@ JobStatus status = future
     .orTimeout(30, MINUTES)    <<--- beter zonder harde timeout, of laat k8s de timeout regelen!
     .exceptionally(ex -> jobRepo.getStatus(execId))     <<--- dan zou deze ook niet nodig meer zijn
     .join();
+
+=========
+De juiste mentale scheiding (dit is de sleutel)
+
+twee soorten executies. Ze mogen nooit dezelfde identifier delen.
+
+1 WorkflowExecution (macro-niveau)
+
+➡️ “Deze workflow-run als geheel”
+	•	workflowExecId
+	•	1 per workflow start
+	•	Wordt gebruikt door:
+	•	WorkflowExecutionService
+	•	WorkflowRunner
+	•	voortgang van de workflow (STARTED / RUNNING / FINISHED / FAILED)
+
+2 JobExecution (micro-niveau)
+
+➡️ “Deze concrete K8s job / node-uitvoering”
+	•	jobExecId
+	•	1 per node-executie
+	•	Wordt gebruikt door:
+	•	JobExecutionService
+	•	Fabric8 watchers (status/log/pod)
+	•	K8s Job metadata
+
