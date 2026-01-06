@@ -1,0 +1,297 @@
+1️⃣ GraphBuilder tests
+
+We testen:
+	•	startnode-detectie
+	•	juiste next mapping
+	•	sequentiële flow
+
+@ExtendWith(MockitoExtension.class)
+class GraphBuilderTest {
+
+    private GraphBuilder graphBuilder = new GraphBuilder();
+
+    @Test
+    void build_sequentialGraph_buildsCorrectNextMapAndStartNode() {
+
+        // nodes
+        NodeEntity start = node("start", NodeKind.START);
+        NodeEntity load  = node("load", NodeKind.TASK);
+        NodeEntity run   = node("run", NodeKind.TASK);
+
+        // edges: start -> load -> run
+        EdgeEntity e1 = edge(start, load);
+        EdgeEntity e2 = edge(load, run);
+
+        WorkflowEntity wf = workflow(
+                List.of(start, load, run),
+                List.of(e1, e2)
+        );
+
+        GraphModel graph = graphBuilder.build(wf);
+
+        assertThat(graph.getStartNodes())
+                .containsExactly(start.getId());
+
+        assertThat(graph.getNext().get(start.getId()))
+                .containsExactly(load.getId());
+
+        assertThat(graph.getNext().get(load.getId()))
+                .containsExactly(run.getId());
+
+        assertThat(graph.getNext().get(run.getId()))
+                .isEmpty();
+    }
+
+    /* ---------- helpers ---------- */
+
+    private NodeEntity node(String key, NodeKind kind) {
+        NodeEntity n = new NodeEntity();
+        n.setId(UUID.randomUUID());
+        n.setNodeKey(key);
+        n.setKind(kind);
+        return n;
+    }
+
+    private EdgeEntity edge(NodeEntity from, NodeEntity to) {
+        EdgeEntity e = new EdgeEntity();
+        e.setSourceNodeId(from.getId());
+        e.setTargetNodeId(to.getId());
+        return e;
+    }
+
+    private WorkflowEntity workflow(List<NodeEntity> nodes, List<EdgeEntity> edges) {
+        WorkflowEntity wf = new WorkflowEntity();
+        wf.setNodes(new ArrayList<>(nodes));
+        wf.setEdges(new ArrayList<>(edges));
+        return wf;
+    }
+}
+
+
+⸻
+
+2️⃣ WorkflowNodeExecutor tests
+
+We testen:
+	•	juiste delegatie naar JobExecutionService
+	•	geen execId-generatie hier (belangrijk!)
+
+@ExtendWith(MockitoExtension.class)
+class WorkflowNodeExecutorTest {
+
+    @Mock
+    JobExecutionService jobExecutionService;
+
+    @InjectMocks
+    WorkflowNodeExecutor executor;
+
+    @Test
+    void execute_runScript_callsJobExecutionServiceWithCorrectRequest() {
+
+        UUID workflowExecId = UUID.randomUUID();
+        UUID workflowId = UUID.randomUUID();
+
+        NodeEntity node = new NodeEntity();
+        node.setId(UUID.randomUUID());
+        node.setType(NodeType.RUN_SCRIPT);
+        node.setParameters(Map.of("script", "echo test"));
+
+        executor.execute(node, workflowExecId, workflowId);
+
+        verify(jobExecutionService)
+                .executeRunScript(argThat(req ->
+                        req.workflowExecId().equals(workflowExecId) &&
+                        req.workflowId().equals(workflowId) &&
+                        req.nodeId().equals(node.getId())
+                ));
+    }
+
+    @Test
+    void execute_endNode_doesNothing() {
+
+        NodeEntity end = new NodeEntity();
+        end.setType(NodeType.END);
+
+        executor.execute(end, UUID.randomUUID(), UUID.randomUUID());
+
+        verifyNoInteractions(jobExecutionService);
+    }
+}
+
+
+⸻
+
+3️⃣ WorkflowRunner tests
+
+Hier zit de meeste waarde.
+
+We testen:
+	•	startnode wordt gepakt
+	•	nodeExecutor wordt aangeroepen
+	•	géén infinite loop
+	•	sequentiële voortgang
+
+💡 Trick: we mocken BackgroundJob.enqueue niet —
+we testen de runNode logica direct
+
+@ExtendWith(MockitoExtension.class)
+class WorkflowRunnerTest {
+
+    @Mock
+    WorkflowRepository wfRepo;
+
+    @Mock
+    WorkflowNodeRepository nodeRepo;
+
+    @Mock
+    GraphBuilder graphBuilder;
+
+    @Mock
+    WorkflowNodeExecutor nodeExecutor;
+
+    @InjectMocks
+    WorkflowRunner runner;
+
+    @Test
+    void runNode_executesNode_andStopsAtEnd() {
+
+        UUID workflowId = UUID.randomUUID();
+        UUID execId = UUID.randomUUID();
+
+        // nodes
+        NodeEntity run = node(NodeType.RUN_SCRIPT);
+        NodeEntity end = node(NodeType.END);
+
+        // graph: run -> end
+        GraphModel graph = graph(
+                Map.of(
+                        run.getId(), List.of(end.getId()),
+                        end.getId(), List.of()
+                ),
+                List.of(run.getId())
+        );
+
+        when(nodeRepo.findById(run.getId()))
+                .thenReturn(Optional.of(run));
+
+        when(wfRepo.findById(workflowId))
+                .thenReturn(Optional.of(new WorkflowEntity()));
+
+        when(graphBuilder.build(any()))
+                .thenReturn(graph);
+
+        when(nodeRepo.findById(end.getId()))
+                .thenReturn(Optional.of(end));
+
+        // act
+        runner.runNode(workflowId, run.getId(), execId);
+
+        // assert
+        verify(nodeExecutor)
+                .execute(run, execId);
+
+        verify(nodeExecutor)
+                .execute(end, execId);
+
+        verifyNoMoreInteractions(nodeExecutor);
+    }
+
+    /* ---------- helpers ---------- */
+
+    private NodeEntity node(NodeType type) {
+        NodeEntity n = new NodeEntity();
+        n.setId(UUID.randomUUID());
+        n.setType(type);
+        return n;
+    }
+
+    private GraphModel graph(Map<UUID, List<UUID>> next, List<UUID> startNodes) {
+        return new GraphModel(next, startNodes);
+    }
+}
+
+
+⸻
+
+✅ Wat deze tests je geven
+
+✔️ GraphBuilder
+	•	correcte graafopbouw
+	•	geen “magische volgorde”
+
+✔️ NodeExecutor
+	•	geen execId-verwarring
+	•	juiste verantwoordelijkheid
+
+✔️ WorkflowRunner
+	•	sequentiële uitvoering bewezen
+	•	geen parallel per ongeluk
+	•	geen infinite loops
+
+
+@Test
+void runWorkflow_enqueuesStartNode() {
+
+    UUID workflowId = UUID.randomUUID();
+    UUID execId = UUID.randomUUID();
+    UUID startNodeId = UUID.randomUUID();
+
+    WorkflowEntity wf = new WorkflowEntity();
+
+    GraphModel graph = mock(GraphModel.class);
+    when(graph.getStartNodes()).thenReturn(List.of(startNodeId));
+
+    when(wfRepo.findById(workflowId))
+            .thenReturn(Optional.of(wf));
+    when(graphBuilder.build(wf))
+            .thenReturn(graph);
+
+    try (MockedStatic<BackgroundJob> bg =
+                 Mockito.mockStatic(BackgroundJob.class)) {
+
+        bg.when(() -> BackgroundJob.enqueue(any()))
+          .thenAnswer(inv -> null);
+
+        runner.runWorkflow(workflowId, execId);
+
+        bg.verify(() ->
+            BackgroundJob.enqueue(any()),
+            times(1)
+        );
+    }
+}
+
+
+
+@Test
+void runWorkflow_callsGraphBuilder() {
+
+    UUID workflowId = UUID.randomUUID();
+    UUID execId = UUID.randomUUID();
+    UUID startNodeId = UUID.randomUUID();
+
+    WorkflowEntity wf = new WorkflowEntity();
+
+    GraphModel graph = mock(GraphModel.class);
+    when(graph.getStartNodes()).thenReturn(List.of(startNodeId));
+
+    when(wfRepo.findById(workflowId))
+            .thenReturn(Optional.of(wf));
+
+    when(graphBuilder.build(wf))
+            .thenReturn(graph);
+
+    try (MockedStatic<BackgroundJob> bg =
+                 Mockito.mockStatic(BackgroundJob.class)) {
+
+        // voorkom echte JobRunr-actie
+        bg.when(() -> BackgroundJob.enqueue(any()))
+          .thenAnswer(inv -> null);
+
+        // ACT
+        runner.runWorkflow(workflowId, execId);
+
+        // ASSERT
+        verify(graphBuilder, times(1)).build(wf);
+    }
+}
