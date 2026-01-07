@@ -384,3 +384,51 @@
 	        }
 	    }
 }
+	
+	@Service
+	@RequiredArgsConstructor
+	public class WorkflowNodeExecutor {
+	
+	    private final JobExecutionService jobExecutionService;
+	    private final JobCompletionAwaiter awaiter;
+	
+	    public void execute(NodeEntity node,
+	                        UUID workflowExecId,
+	                        boolean sequential) {
+	
+	        UUID jobExecId = workflowExecId; // MVP: 1-op-1
+	
+	        switch (node.getType()) {
+	
+	            case RUN_SCRIPT -> {
+	                RunScriptNodeRequestDto dto =
+	                        RunScriptNodeRequestDto.from(node);
+	
+	                jobExecutionService.executeScriptJobInternal(dto, jobExecId);
+	
+	                if (sequential) {
+	                    awaiter.await(jobExecId);
+	                }
+	            }
+	
+	            case INLINE_SCRIPT -> {
+	                InlineScriptNodeRequestDto dto =
+	                        InlineScriptNodeRequestDto.from(node);
+	
+	                jobExecutionService.executeInlineScript(dto, jobExecId);
+	
+	                if (sequential) {
+	                    awaiter.await(jobExecId);
+	                }
+	            }
+	
+	            case END -> {
+	                // mark workflow finished (later)
+	            }
+	
+	            default -> throw new IllegalStateException(
+	                    "Unsupported node type: " + node.getType()
+	            );
+	        }
+	    }
+}
