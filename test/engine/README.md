@@ -349,3 +349,38 @@
 	        );
 	    }
 }
+
+	@Component
+	@RequiredArgsConstructor
+	public class PollingJobCompletionAwaiter
+	        implements JobCompletionAwaiter {
+	
+	    private final JobExecutionRepository jobRepo;
+	
+	    @Override
+	    public void await(UUID execId) {
+	
+	        while (true) {
+	            JobExecutionStatus status = jobRepo.findById(execId)
+	                    .map(JobExecutionEntity::getStatus)
+	                    .orElseThrow();
+	
+	            if (status == JobExecutionStatus.SUCCEEDED) {
+	                return;
+	            }
+	
+	            if (status == JobExecutionStatus.FAILED) {
+	                throw new IllegalStateException(
+	                        "Job failed: " + execId
+	                );
+	            }
+	
+	            try {
+	                Thread.sleep(1_000); // 1s is prima
+	            } catch (InterruptedException e) {
+	                Thread.currentThread().interrupt();
+	                throw new IllegalStateException("Interrupted", e);
+	            }
+	        }
+	    }
+}
