@@ -1,0 +1,199 @@
+🧱 1. Heldere executiestatus op workflow-niveau (must-have)
+
+Je hebt dit deels al, maar check of dit volledig en consequent is.
+
+Wat moet er minimaal zijn
+	•	WorkflowExecutionEntity
+	•	workflowExecId
+	•	workflowId
+	•	status (PENDING / RUNNING / SUCCEEDED / FAILED)
+	•	startedAt
+	•	finishedAt
+	•	errorMessage (nullable)
+
+Waar het vaak misgaat
+	•	Status alleen op job-niveau (node)
+	•	Geen duidelijke overgang bij END node
+
+Wat je nog expliciet moet doen
+
+In je WorkflowRunner:
+
+try {
+    runNode(...);
+    workflowExecRepo.markSucceeded(execId);
+} catch (Exception e) {
+    workflowExecRepo.markFailed(execId, e.getMessage());
+    throw e;
+}
+
+➡️ Zonder dit is je workflow “klaar”, maar weet niemand dat.
+
+⸻
+
+🔒 2. Idempotentie & herstartbaarheid (MVP-waardig)
+
+Belangrijker dan het lijkt.
+
+Scenario’s die nu nog fout kunnen gaan
+	•	JobRunr retryt een node → dubbele uitvoering
+	•	Applicatie crasht halverwege → workflow hangt “RUNNING”
+	•	User klikt 2x op “start”
+
+MVP-oplossing (simpel maar effectief)
+
+Voeg een WorkflowNodeExecution tabel toe:
+
+workflowExecId	nodeId	status	startedAt	finishedAt
+
+
+En check vóór executie:
+
+if (nodeExecRepo.isCompleted(execId, nodeId)) {
+    return; // idempotent skip
+}
+
+➡️ Dit maakt je engine crash-safe zonder complexiteit.
+
+⸻
+
+🧠 3. Duidelijk onderscheid: workflowExecId vs jobExecId (must-fix)
+
+Je hebt dit zelf al scherp gezien — dit is cruciaal.
+
+Richtlijn (houd hier hard aan vast)
+	•	workflowExecId
+	•	Orkestratie
+	•	Graph
+	•	Workflow status
+	•	jobExecId
+	•	Kubernetes job
+	•	Logs
+	•	Pod watchers
+
+Praktisch patroon (aanrader)
+
+In je WorkflowNodeExecutionRequest:
+
+record WorkflowNodeExecutionRequest(
+    UUID workflowExecId,
+    UUID workflowId,
+    UUID nodeId,
+    Map<String, Object> parameters
+) {}
+
+En intern in JobExecutionService:
+
+UUID jobExecId = UUID.randomUUID();
+
+Nooit andersom.
+Nooit user-facing.
+
+⸻
+
+🧯 4. Foutafhandeling & propagatie (production MVP)
+
+Je engine moet deterministisch falen.
+
+Minimaal gedrag
+	•	Node faalt → workflow faalt
+	•	Job FAILED → awaiter gooit exception
+	•	Exception → workflow status = FAILED
+
+Check dat dit klopt
+	•	JobCompletionAwaiter.await() gooit exception bij FAILED ✔
+	•	WorkflowRunner vangt die en markeert workflow FAILED ✔
+
+Als dit niet 100% sluitend is → fix dit vóór alles.
+
+⸻
+
+⏱️ 5. Timeouts & cancel-mechanisme (lightweight MVP)
+
+Je scripts kunnen uren duren — dat is oké.
+Maar je engine moet kunnen zeggen: genoeg.
+
+MVP-minimum
+	•	Max runtime per node (configurable)
+	•	Handmatige cancel
+
+Bijvoorbeeld:
+
+if (workflowExec.isCancelled()) {
+    throw new WorkflowCancelledException();
+}
+
+Cancel-knop = status zetten → awaiter ziet het → exit.
+
+⸻
+
+📊 6. Observability (onderschat, maar MVP-waardig)
+
+Zonder dit ga je blind troubleshooten.
+
+Absoluut minimum
+	•	Structured logging:
+	•	workflowExecId
+	•	nodeId
+	•	jobExecId
+	•	Metrics:
+	•	actieve workflows
+	•	gemiddelde node runtime
+	•	failures per node type
+
+Je hoeft geen Prometheus-extravaganza, maar context in logs is verplicht.
+
+⸻
+
+🔐 7. Security & multi-user isolation (check)
+
+Als dit binnen een organisatie draait:
+	•	Wie mag workflow starten?
+	•	Wie mag logs zien?
+	•	Mag user A workflow B starten?
+
+Voor MVP:
+	•	workflowId scoping per user / tenant
+	•	simpele @PreAuthorize checks
+
+⸻
+
+🧪 8. Tests die je MVP écht dragen
+
+Je hoeft niet alles te testen.
+
+Wat wél moet
+	•	GraphBuilder (deterministisch)
+	•	WorkflowRunner (happy path + failure)
+	•	WorkflowScheduleRegistrar
+	•	JobCompletionAwaiter (mock repo)
+
+Als deze groen zijn → engine is betrouwbaar.
+
+⸻
+
+🧭 9. Documenteer het mentale model (onderschat!)
+
+Voor jezelf én anderen:
+
+“WorkflowRunner is dom en sequentieel.
+JobRunr is alleen een scheduler.
+Kubernetes doet het zware werk.
+Watchers + Awaiter zorgen voor synchronisatie.”
+
+Als iemand dat snapt → onboarding = 10 minuten.
+
+⸻
+
+🏁 Samenvattend: MVP-checklist
+
+Je bent MVP-ready als je dit kunt afvinken:
+	•	WorkflowExecution status correct
+	•	Node-executies idempotent
+	•	Duidelijk onderscheid workflowExecId vs jobExecId
+	•	Falen = falen (geen zombie workflows)
+	•	Awaiter is losgetrokken & testbaar
+	•	Schedules werken stabiel
+	•	Logs zijn herleidbaar
+
+
