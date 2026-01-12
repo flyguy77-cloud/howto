@@ -1,0 +1,101 @@
+1. GraphModel -> Graph-semantiek (dependencies begrijpen)
+2. GraphBuilder -> Incoming edges beschikbaar maken
+3. WorkflowRunner -> Context doorgeven naar nodeExecutor
+4. WorkflowNodeExecutor -> RunScript correct voorbereiden
+
+
+public record GraphModel(
+        Map<UUID, NodeEntity> nodes,
+        Map<UUID, List<UUID>> outgoing,
+        Map<UUID, List<UUID>> incoming,
+        List<UUID> startNodes
+) {
+
+    public NodeEntity getNode(UUID nodeId) {
+        return nodes.get(nodeId);
+    }
+
+    public List<UUID> next(UUID nodeId) {
+        return outgoing.getOrDefault(nodeId, List.of());
+    }
+
+    public List<UUID> predecessors(UUID nodeId) {
+        return incoming.getOrDefault(nodeId, List.of());
+    }
+
+    /**
+     * Resolve the LoadScript node that provides the script
+     * for a given RunScript node.
+     */
+    public UUID resolveRequiredLoadScript(UUID runScriptNodeId) {
+
+        List<UUID> preds = predecessors(runScriptNodeId);
+
+        List<UUID> loadScripts = preds.stream()
+                .map(this::getNode)
+                .filter(n -> n.getType() == NodeType.LOAD_SCRIPT)
+                .map(NodeEntity::getId)
+                .toList();
+
+        if (loadScripts.size() != 1) {
+            throw new IllegalStateException(
+                "RunScript must have exactly 1 incoming LoadScript"
+            );
+        }
+
+        return loadScripts.get(0);
+    }
+}
+
+
+======
+@Service
+@RequiredArgsConstructor
+public class WorkflowNodeExecutor {
+
+    private final JobExecutionService jobExecutionService;
+    private final JobCompletionAwaiter awaiter;
+
+    public void execute(NodeEntity node,
+                        GraphModel graph,
+                        UUID workflowExecId) {
+
+        switch (node.getType()) {
+
+            case LOAD_SCRIPT -> {
+                // no-op: provides data only
+            }
+
+            case RUN_SCRIPT -> {
+
+                UUID loadScriptNodeId =
+                        graph.resolveRequiredLoadScript(node.getId());
+
+                NodeEntity loadScript =
+                        graph.getNode(loadScriptNodeId);
+
+                RunScriptNodeRequestDto dto =
+                        new RunScriptNodeRequestDto(
+                                loadScript.getGitlabConfig(), // {projectId, ref, path}
+                                node.getArgs(),
+                                node.getEnv()
+                        );
+
+                UUID jobExecId =
+                        jobExecutionService.executeScriptJob(dto);
+
+                // SEQUENTIAL guarantee (MVP)
+                awaiter.await(jobExecId);
+            }
+
+            case END -> {
+                // Workflow finished → mark workflowExec as SUCCEEDED
+            }
+
+            default ->
+                throw new IllegalStateException(
+                    "Unsupported node type: " + node.getType()
+                );
+        }
+    }
+}
