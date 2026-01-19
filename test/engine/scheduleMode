@@ -1,0 +1,43 @@
+wel in de WorkflowService (create/update)
+
+enum blijft bestaan
+public enum ScheduleMode {
+    MANUAL,
+    SCHEDULED
+}
+
+helper
+
+private ScheduleMode determineScheduleMode(List<WorkflowNodeEntity> nodes) {
+    boolean hasScheduledStart =
+            nodes.stream()
+                 .anyMatch(n ->
+                     n.getKind() == NodeKind.START &&
+                     n.getStartMode() == StartMode.SCHEDULED
+                 );
+
+    return hasScheduledStart
+            ? ScheduleMode.SCHEDULED
+            : ScheduleMode.MANUAL;
+}
+
+@Transactional
+public UUID create(WorkflowRequestDto dto) {
+
+    WorkflowEntity wf = dto.toWorkflowEntity();
+
+    ScheduleMode mode = determineScheduleMode(wf.getNodes());
+    wf.setScheduleMode(mode);
+
+    workflowRepo.save(wf);
+    return wf.getId();
+}
+
+nog zuiverder
+
+public ScheduleMode getScheduleMode() {
+    return nodes.stream().anyMatch(...)
+           ? ScheduleMode.SCHEDULED
+           : ScheduleMode.MANUAL;
+}
+
