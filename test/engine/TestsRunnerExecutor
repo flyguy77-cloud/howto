@@ -59,5 +59,243 @@ class WorkflowRunnerTest {
                     BackgroundJob.enqueue(any(Runnable.class))
             );
         }
+
+
+NodeExecutor
+
+@ExtendWith(MockitoExtension.class)
+class WorkflowNodeExecutorTest {
+
+    @Mock JobExecutionService jobExecutionService;
+    @Mock JobCompletionAwaiter awaiter;
+
+    @InjectMocks WorkflowNodeExecutor executor;
+
+@Test
+void execute_runScript_executesAndAwaits() {
+
+    UUID workflowExecId = UUID.randomUUID();
+    UUID jobExecId = UUID.randomUUID();
+
+    NodeEntity node = mock(NodeEntity.class);
+    when(node.getType()).thenReturn(NodeType.RUN_SCRIPT);
+    when(node.getParameters()).thenReturn(Map.of("x", "1"));
+
+    when(jobExecutionService.executeRunScript(any()))
+            .thenReturn(jobExecId);
+
+    executor.execute(node, workflowExecId);
+
+    verify(jobExecutionService).executeRunScript(any());
+    verify(awaiter).await(jobExecId);
+}
+
+@Test
+void execute_endNode_doesNothing() {
+
+    NodeEntity node = mock(NodeEntity.class);
+    when(node.getType()).thenReturn(NodeType.END);
+
+    executor.execute(node, UUID.randomUUID());
+
+    verifyNoInteractions(jobExecutionService);
+    verifyNoInteractions(awaiter);
+}
+
+@Test
+void execute_unsupportedNode_throwsException() {
+
+    NodeEntity node = mock(NodeEntity.class);
+    when(node.getType()).thenReturn(NodeType.LOAD_SCRIPT);
+
+    assertThatThrownBy(() ->
+            executor.execute(node, UUID.randomUUID())
+    ).isInstanceOf(UnsupportedOperationException.class);
+}
+
+
+GraphBuilder
+
+@ExtendWith(MockitoExtension.class)
+class GraphBuilderTest {
+
+    private final GraphBuilder graphBuilder = new GraphBuilder();
+
+@Test
+void build_detectsStartNode() {
+
+    UUID startId = UUID.randomUUID();
+
+    NodeEntity start = mock(NodeEntity.class);
+    when(start.getId()).thenReturn(startId);
+    when(start.getKind()).thenReturn(NodeKind.START);
+
+    WorkflowEntity wf = mock(WorkflowEntity.class);
+    when(wf.getNodes()).thenReturn(List.of(start));
+    when(wf.getEdges()).thenReturn(List.of());
+
+    GraphModel graph = graphBuilder.build(wf);
+
+    assertThat(graph.startNodes())
+            .containsExactly(startId);
+}
+
+@Test
+void build_createsSequentialNextMapping() {
+
+    UUID startId = UUID.randomUUID();
+    UUID nextId  = UUID.randomUUID();
+
+    NodeEntity start = mock(NodeEntity.class);
+    when(start.getId()).thenReturn(startId);
+    when(start.getKind()).thenReturn(NodeKind.START);
+
+    NodeEntity next = mock(NodeEntity.class);
+    when(next.getId()).thenReturn(nextId);
+    when(next.getKind()).thenReturn(NodeKind.TASK);
+
+    EdgeEntity edge = mock(EdgeEntity.class);
+    when(edge.getSourceNodeId()).thenReturn(startId);
+    when(edge.getTargetNodeId()).thenReturn(nextId);
+
+    WorkflowEntity wf = mock(WorkflowEntity.class);
+    when(wf.getNodes()).thenReturn(List.of(start, next));
+    when(wf.getEdges()).thenReturn(List.of(edge));
+
+    GraphModel graph = graphBuilder.build(wf);
+
+    assertThat(graph.next())
+            .containsEntry(startId, List.of(nextId));
+}
+
+@Test
+void build_nodeWithoutOutgoingEdges_hasEmptyNextList() {
+
+    UUID nodeId = UUID.randomUUID();
+
+    NodeEntity node = mock(NodeEntity.class);
+    when(node.getId()).thenReturn(nodeId);
+    when(node.getKind()).thenReturn(NodeKind.TASK);
+
+    WorkflowEntity wf = mock(WorkflowEntity.class);
+    when(wf.getNodes()).thenReturn(List.of(node));
+    when(wf.getEdges()).thenReturn(List.of());
+
+    GraphModel graph = graphBuilder.build(wf);
+
+    assertThat(graph.next())
+            .containsEntry(nodeId, List.of());
+}
+
+WorkflowNodeExecutor
+
+@Test
+void execute_runScriptNode_executesAndAwaits() {
+
+    UUID execId = UUID.randomUUID();
+
+    NodeEntity node = mock(NodeEntity.class);
+    when(node.getType()).thenReturn(NodeType.RUN_SCRIPT);
+    when(node.getParameters()).thenReturn(Map.of("a", "b"));
+
+    UUID jobExecId = UUID.randomUUID();
+    when(jobExecutionService.executeRunScript(any()))
+            .thenReturn(jobExecId);
+
+    executor.execute(node, execId);
+
+    verify(jobExecutionService).executeRunScript(any());
+    verify(awaiter).await(jobExecId);
+}
+
+@Test
+void execute_endNode_doesNothing() {
+
+    NodeEntity node = mock(NodeEntity.class);
+    when(node.getType()).thenReturn(NodeType.END);
+
+    executor.execute(node, UUID.randomUUID());
+
+    verifyNoInteractions(jobExecutionService);
+    verifyNoInteractions(awaiter);
+}
+
+WorkflowRunner
+
+@ExtendWith(MockitoExtension.class)
+class WorkflowRunnerTest {
+
+    @Mock WorkflowRepository wfRepo;
+    @Mock WorkflowNodeRepository nodeRepo;
+    @Mock WorkflowExecutionRepository execRepo;
+    @Mock GraphBuilder graphBuilder;
+    @Mock WorkflowNodeExecutor nodeExecutor;
+
+    @InjectMocks WorkflowRunner workflowRunner;
+
+@Test
+void runNode_whenNoNextNode_marksWorkflowFinished() {
+
+    UUID workflowId = UUID.randomUUID();
+    UUID execId = UUID.randomUUID();
+    UUID nodeId = UUID.randomUUID();
+
+    NodeEntity node = mock(NodeEntity.class);
+    when(nodeRepo.findById(nodeId)).thenReturn(Optional.of(node));
+
+    WorkflowEntity wf = mock(WorkflowEntity.class);
+    when(wfRepo.findById(workflowId)).thenReturn(Optional.of(wf));
+
+    GraphModel graph = mock(GraphModel.class);
+    when(graph.getNext()).thenReturn(Map.of()); // no next
+    when(graphBuilder.build(wf)).thenReturn(graph);
+
+    WorkflowExecutionEntity exec = new WorkflowExecutionEntity();
+    exec.setExecId(execId);
+    exec.setStatus(WorkflowExecutionStatus.RUNNING);
+
+    when(execRepo.findById(execId)).thenReturn(Optional.of(exec));
+
+    // static mock JobRunr
+    try (MockedStatic<BackgroundJob> bg = mockStatic(BackgroundJob.class)) {
+
+        workflowRunner.runNode(workflowId, nodeId, execId);
+
+        verify(nodeExecutor).execute(node, execId);
+        verify(execRepo).save(argThat(e ->
+                e.getStatus() == WorkflowExecutionStatus.SUCCEEDED &&
+                e.getFinishedAt() != null
+        ));
+
+        bg.verifyNoInteractions(); // no next enqueue
+    }
+}
+
+@Test
+void runNode_withNextNode_enqueuesNextStep() {
+
+    UUID workflowId = UUID.randomUUID();
+    UUID execId = UUID.randomUUID();
+    UUID nodeId = UUID.randomUUID();
+    UUID nextNodeId = UUID.randomUUID();
+
+    NodeEntity node = mock(NodeEntity.class);
+    when(nodeRepo.findById(nodeId)).thenReturn(Optional.of(node));
+
+    WorkflowEntity wf = mock(WorkflowEntity.class);
+    when(wfRepo.findById(workflowId)).thenReturn(Optional.of(wf));
+
+    GraphModel graph = mock(GraphModel.class);
+    when(graph.getNext()).thenReturn(
+            Map.of(nodeId, List.of(nextNodeId))
+    );
+    when(graphBuilder.build(wf)).thenReturn(graph);
+
+    try (MockedStatic<BackgroundJob> bg = mockStatic(BackgroundJob.class)) {
+
+        workflowRunner.runNode(workflowId, nodeId, execId);
+
+        verify(nodeExecutor).execute(node, execId);
+        bg.verify(() -> BackgroundJob.enqueue(any(Runnable.class)));
     }
 }
