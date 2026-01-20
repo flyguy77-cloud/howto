@@ -1,0 +1,63 @@
+@ExtendWith(MockitoExtension.class)
+class WorkflowRunnerTest {
+
+    @Mock
+    WorkflowRepository wfRepo;
+
+    @Mock
+    WorkflowNodeRepository nodeRepo;
+
+    @Mock
+    GraphBuilder graphBuilder;
+
+    @Mock
+    WorkflowNodeExecutor nodeExecutor;
+
+    WorkflowRunner runner;
+
+    @BeforeEach
+    void setup() {
+        runner = new WorkflowRunner(
+                wfRepo,
+                nodeRepo,
+                graphBuilder,
+                nodeExecutor
+        );
+    }
+
+    @Test
+    void runWorkflow_enqueuesFirstNodeExecution() {
+
+        // given
+        UUID workflowId = UUID.randomUUID();
+        UUID workflowExecId = UUID.randomUUID();
+        UUID startNodeId = UUID.randomUUID();
+
+        WorkflowEntity wf = new WorkflowEntity();
+        wf.setId(workflowId);
+
+        GraphModel graph = new GraphModel(
+                Map.of(startNodeId, List.of()), // next-map
+                List.of(startNodeId)             // startNodes
+        );
+
+        when(wfRepo.findById(workflowId))
+                .thenReturn(Optional.of(wf));
+
+        when(graphBuilder.build(wf))
+                .thenReturn(graph);
+
+        // static mock voor JobRunr
+        try (MockedStatic<BackgroundJob> jobMock =
+                     Mockito.mockStatic(BackgroundJob.class)) {
+
+            // when
+            runner.runWorkflow(workflowId, workflowExecId);
+
+            // then
+            jobMock.verify(() ->
+                    BackgroundJob.enqueue(any(Runnable.class))
+            );
+        }
+    }
+}
