@@ -299,3 +299,33 @@ void runNode_withNextNode_enqueuesNextStep() {
         bg.verify(() -> BackgroundJob.enqueue(any(Runnable.class)));
     }
 }
+
+=========================
+GraphModel graph = new GraphModel(
+    Map.of(startNodeId, List.of()), // ❌ empty next
+    List.of(startNodeId)
+);
+-------
+UUID startNodeId = UUID.randomUUID();
+UUID taskNodeId = UUID.randomUUID();
+
+Map<UUID, List<UUID>> nextMap = new HashMap<>();
+nextMap.put(startNodeId, List.of(taskNodeId));  // START → TASK
+nextMap.put(taskNodeId, List.of());              // TASK → END
+
+GraphModel graph = new GraphModel(
+    nextMap,
+    List.of(startNodeId)
+);
+
+--------
+TIP altijd zo bouwen
+UUID start = UUID.randomUUID();
+UUID next = UUID.randomUUID();
+
+Map<UUID, List<UUID>> map = new HashMap<>();
+map.put(start, List.of(next));
+map.put(next, List.of());
+
+Nooit Map.of() bij dit soort tests → moeilijk debugbaar bij fouten.
+GraphModel graph = new GraphModel(map, List.of(start));
