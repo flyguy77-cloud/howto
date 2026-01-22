@@ -1,0 +1,93 @@
+@Test
+void execute_runScript_executesJobAndWaits() {
+
+    UUID workflowExecId = UUID.randomUUID();
+    UUID jobExecId = UUID.randomUUID();
+
+    WorkflowExecutionContext ctx =
+            new WorkflowExecutionContext(workflowExecId);
+
+    ScriptRef script = new ScriptRef(
+            123,
+            "main",
+            "scripts/report.R"
+    );
+    ctx.put("script", script);
+
+    NodeEntity node = new NodeEntity();
+    node.setType(NodeType.RUN_SCRIPT);
+    node.setArgs(Map.of("foo", "bar"));
+    node.setEnv(Map.of("ENV", "test"));
+
+    when(jobExecutionService.executeScriptJobInternal(
+            any(RunScriptNodeRequestDto.class),
+            eq(workflowExecId)
+    )).thenReturn(jobExecId);
+    executor.execute(node, ctx);
+
+    ArgumentCaptor<RunScriptNodeRequestDto> captor =
+            ArgumentCaptor.forClass(RunScriptNodeRequestDto.class);
+
+    verify(jobExecutionService).executeScriptJobInternal(
+            captor.capture(),
+            eq(workflowExecId)
+    );
+
+    RunScriptNodeRequestDto dto = captor.getValue();
+
+    assertThat(dto.script()).isEqualTo(script);
+    assertThat(dto.args()).containsEntry("foo", "bar");
+    assertThat(dto.env()).containsEntry("ENV", "test");
+
+    verify(awaiter).await(jobExecId);
+}
+
+
+
+@ExtendWith(MockitoExtension.class)
+class WorkflowNodeExecutorTest {
+
+    @Mock
+    JobExecutionService jobExecutionService;
+
+    @Mock
+    JobCompletionAwaiter awaiter;
+
+    @InjectMocks
+    WorkflowNodeExecutor executor;
+
+    @Test
+    void execute_runScript_callsJobExecutionAndAwaiter() {
+
+        // arrange
+        UUID workflowExecId = UUID.randomUUID();
+        UUID jobExecId = UUID.randomUUID();
+
+        WorkflowExecutionContext ctx =
+                new WorkflowExecutionContext(workflowExecId);
+
+        NodeEntity node = new NodeEntity();
+        node.setType(NodeType.RUN_SCRIPT);
+
+        when(jobExecutionService.executeScriptJobInternal(
+                any(),
+                eq(workflowExecId)
+        )).thenReturn(jobExecId);
+
+        // act
+        executor.execute(node, ctx);
+
+        // assert
+        verify(jobExecutionService)
+                .executeScriptJobInternal(any(), eq(workflowExecId));
+
+        verify(awaiter)
+                .await(jobExecId);
+
+        verifyNoMoreInteractions(jobExecutionService, awaiter);
+    }
+}
+
+
+
+
