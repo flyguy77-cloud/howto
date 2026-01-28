@@ -1,0 +1,263 @@
+Workflow zonder start node
+
+@Test
+void runWorkflow_withoutStartNode_throwsException() {
+
+    UUID workflowId = UUID.randomUUID();
+    UUID execId = UUID.randomUUID();
+
+    WorkflowEntity wf = new WorkflowEntity();
+    wf.setId(workflowId);
+
+    GraphModel graph = new GraphModel(
+            Map.of(),
+            Map.of(),
+            List.of() // ❌ geen startnodes
+    );
+
+    when(workflowRepo.findById(workflowId))
+            .thenReturn(Optional.of(wf));
+
+    when(graphBuilder.build(wf))
+            .thenReturn(graph);
+
+    assertThatThrownBy(() ->
+            workflowRunner.runWorkflow(workflowId, execId)
+    ).isInstanceOf(IllegalStateException.class)
+     .hasMessageContaining("start");
+}
+
+Workflow stopt correct wanneer er geen next node meer is
+
+@Test
+void runWorkflow_stopsWhenNoNextNode() {
+
+    withImmediateJobRun(() -> {
+
+        UUID workflowId = UUID.randomUUID();
+        UUID execId = UUID.randomUUID();
+        UUID nodeA = UUID.randomUUID();
+
+        WorkflowEntity wf = new WorkflowEntity();
+        wf.setId(workflowId);
+
+        NodeEntity a = new NodeEntity(nodeA);
+
+        GraphModel graph = new GraphModel(
+                Map.of(nodeA, a),
+                Map.of(nodeA, List.of()),
+                List.of(nodeA)
+        );
+
+        when(workflowRepo.findById(workflowId))
+                .thenReturn(Optional.of(wf));
+
+        when(graphBuilder.build(wf))
+                .thenReturn(graph);
+
+        when(nodeRepo.findById(nodeA))
+                .thenReturn(Optional.of(a));
+
+        // ACT
+        workflowRunner.runWorkflow(workflowId, execId);
+
+        // ASSERT
+        verify(nodeExecutor).execute(a, execId);
+        verifyNoMoreInteractions(nodeExecutor);
+    });
+}
+
+Execute nodes sequentially:
+
+@Test
+void runWorkflow_executesNodesSequentially() {
+
+    withImmediateJobRun(() -> {
+
+        UUID workflowId = UUID.randomUUID();
+        UUID execId = UUID.randomUUID();
+
+        UUID nodeA = UUID.randomUUID();
+        UUID nodeB = UUID.randomUUID();
+        UUID nodeC = UUID.randomUUID();
+
+        WorkflowEntity wf = new WorkflowEntity();
+        wf.setId(workflowId);
+
+        NodeEntity a = new NodeEntity(nodeA);
+        NodeEntity b = new NodeEntity(nodeB);
+        NodeEntity c = new NodeEntity(nodeC);
+
+        GraphModel graph = new GraphModel(
+                Map.of(
+                        nodeA, a,
+                        nodeB, b,
+                        nodeC, c
+                ),
+                Map.of(
+                        nodeA, List.of(nodeB),
+                        nodeB, List.of(nodeC),
+                        nodeC, List.of()
+                ),
+                List.of(nodeA)
+        );
+
+        when(workflowRepo.findById(workflowId))
+                .thenReturn(Optional.of(wf));
+
+        when(graphBuilder.build(wf))
+                .thenReturn(graph);
+
+        when(nodeRepo.findById(any()))
+                .thenAnswer(inv -> Optional.of(graph.getNode(inv.getArgument(0))));
+
+        // ACT
+        workflowRunner.runWorkflow(workflowId, execId);
+
+        // ASSERT: volgorde
+        InOrder order = inOrder(nodeExecutor);
+
+        order.verify(nodeExecutor).execute(a, execId);
+        order.verify(nodeExecutor).execute(b, execId);
+        order.verify(nodeExecutor).execute(c, execId);
+
+        order.verifyNoMoreInteractions();
+    });
+}
+
+of
+
+@Test
+void runWorkflow_executesNodesSequentially() {
+    UUID workflowId = UUID.randomUUID();
+    UUID execId = UUID.randomUUID();
+
+    UUID nodeA = UUID.randomUUID();
+    UUID nodeB = UUID.randomUUID();
+    UUID nodeC = UUID.randomUUID();
+
+    GraphModel graph = new GraphModel(
+        Map.of(
+            nodeA, new NodeEntity(nodeA),
+            nodeB, new NodeEntity(nodeB),
+            nodeC, new NodeEntity(nodeC)
+        ),
+        Map.of(
+            nodeA, List.of(nodeB),
+            nodeB, List.of(nodeC),
+            nodeC, List.of()
+        ),
+        Map.of(
+            nodeB, List.of(nodeA),
+            nodeC, List.of(nodeB)
+        ),
+        List.of(nodeA) // startNodes
+    );
+
+    when(graphBuilder.build(any()))
+        .thenReturn(graph);
+
+    when(nodeRepo.findById(any()))
+        .thenAnswer(inv -> graph.node(inv.getArgument(0)));
+
+    // Act
+    workflowRunner.runWorkflow(workflowId, execId);
+}
+
+
+
+Test setup
+
+@ExtendWith(MockitoExtension.class)
+class WorkflowRunnerTest {
+
+    @Mock
+    WorkflowRepository workflowRepo;
+
+    @Mock
+    WorkflowNodeRepository nodeRepo;
+
+    @Mock
+    GraphBuilder graphBuilder;
+
+    @Mock
+    WorkflowNodeExecutor nodeExecutor;
+
+    @InjectMocks
+    WorkflowRunner workflowRunner;
+}
+
+Statische calls jobRunr
+
+import static org.mockito.Mockito.*;
+
+import org.jobrunr.jobs.BackgroundJob;
+import org.mockito.MockedStatic;
+
+void withImmediateJobRun(Runnable testBody) {
+    try (MockedStatic<BackgroundJob> mocked = mockStatic(BackgroundJob.class)) {
+        mocked.when(() -> BackgroundJob.enqueue(any(Runnable.class)))
+              .thenAnswer(inv -> {
+                  Runnable r = inv.getArgument(0);
+                  r.run(); // 🔥 direct uitvoeren
+                  return null;
+              });
+
+        testBody.run();
+    }
+}
+
+In de tests:
+
+> Expliciet start nodes definieren
+
+NodeEntity start = new NodeEntity(startId);
+start.setKind(NodeKind.START);
+
+NodeEntity task1 = new NodeEntity(task1Id);
+task1.setKind(NodeKind.TASK);
+
+NodeEntity task2 = new NodeEntity(task2Id);
+task2.setKind(NodeKind.TASK);
+
+> Graphmodel opbouwen
+GraphModel graph = new GraphModel(
+    Map.of(
+        startId, start,
+        task1Id, task1,
+        task2Id, task2
+    ),
+    Map.of(
+        startId, List.of(task1Id),
+        task1Id, List.of(task2Id),
+        task2Id, List.of()
+    ),
+    List.of(startId)   // ✅ EXACT één startnode
+);
+
+Outgoing -> welke nodes kan ik na A benaderen A -> [B,C]
+	•	nuttig voor:
+	•	parallel splits
+	•	sequentiële opvolging
+	•	“wat moet ik enqueue na deze node?”
+
+incoming: D <- [B, C]
+	•	welke nodes moeten klaar zijn vóór D?
+	•	essentieel voor:
+	•	joins (ALL / ANY)
+	•	validatie (“heeft deze node meerdere voorgangers?”)
+	•	future parallel logic
+
+dus:
+•	nodes → wat bestaat er
+•	outgoing / incoming → hoe het loopt
+•	startNodes → waar begin je
+
+Maar je weet niet:
+•	welke node na welke komt
+•	of er meerdere paden zijn
+•	of een node een join of split is
+•	of een node predecessors heeft
+•	of een node een startnode is (zonder extra scans)
+
+Je zou dan elke keer opnieuw de edges moeten herberekenen.
