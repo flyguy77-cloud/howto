@@ -1,0 +1,25 @@
+https://kubernetes.default.svc/openid/v1/jwks
+https://kubernetes.default.svc.cluster.local/
+
+in de pod
+/var/run/secrets/kubernetes.io/serviceaccount/token
+cluster ca
+/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+
+
+TLS trust (meest voorkomende issue)
+
+Java/Spring vertrouwt niet automatisch de Kubernetes CA.
+
+Je moet expliciet de CA vertrouwen.
+
+Optie A – JVM truststore (meest robuust):
+	•	Mount /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+	•	Importeer in truststore bij startup
+
+Optie B – Spring Resource Server config:
+Spring Boot ≥ 3.1 kan hiermee omgaan als JVM CA goed staat.
+
+Als je dit niet doet krijg je:
+	•	PKIX path building failed
+	•	unable to find valid certification path
