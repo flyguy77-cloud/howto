@@ -1,25 +1,82 @@
-https://kubernetes.default.svc/openid/v1/jwks
-https://kubernetes.default.svc.cluster.local/
+TokenReview tr = tokenReview(...);
 
-in de pod
-/var/run/secrets/kubernetes.io/serviceaccount/token
-cluster ca
-/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+if (!Boolean.TRUE.equals(tr.getStatus().getAuthenticated())) {
+    throw new UnauthorizedException();
+}
+
+String expected = "system:serviceaccount:" + namespace + ":" + expectedSaName;
+
+if (!expected.equals(tr.getStatus().getUser().getUsername())) {
+    throw new ForbiddenException("Not my serviceaccount");
+}
+
+=================
+Pod call naar bijvoorbeeld:
+POST /internal/token
+
+Headers/body:
+	•	Authorization: Bearer <SA_JWT>  ✅ (pod identiteit)
+	•	X-Workflow-ExecId: <uuid>       ✅
+	•	X-K8s-Job-Uid: <uid>            ✅ (of je kunt pod UID gebruiken)
+	•	(optioneel) X-Node-ExecId       ✅
+
+Je hoeft geen userId mee te sturen vanuit de pod (juist niet).
+De backend haalt owner uit DB
+
+==================
+WorkflowExecutionEntity exec = execRepo.findById(execId)
+    .orElseThrow(() -> new ForbiddenException("Unknown execution"));
+
+if (!jobUid.equals(exec.getK8sJobUid())) {
+    throw new ForbiddenException("jobUid mismatch for execId");
+}
+
+=================
+String ownerUserId = exec.getOwnerUserId();
+
+================
+public String issueUserTokenForExecution(String saJwt, UUID execId, String jobUid) {
+
+    // 1) AuthN: Kubernetes validates SA token
+    TokenReview tr = tokenReview(saJwt);
+    if (!Boolean.TRUE.equals(tr.getStatus().getAuthenticated())) {
+        throw new UnauthorizedException("Invalid pod token");
+    }
+
+    String expected = "system:serviceaccount:" + namespace + ":" + allowedSaName;
+    String actual   = tr.getStatus().getUser().getUsername();
+    if (!expected.equals(actual)) {
+        throw new ForbiddenException("Not allowed serviceaccount");
+    }
+
+    // 2) AuthZ: bind request to DB
+    WorkflowExecutionEntity exec = execRepo.findById(execId)
+        .orElseThrow(() -> new ForbiddenException("Unknown execId"));
+
+    if (!jobUid.equals(exec.getK8sJobUid())) {
+        throw new ForbiddenException("jobUid mismatch");
+    }
+
+    // 3) Mint user token for the recorded owner (pod doesn't choose user!)
+    return impersonationService.tokenForUser(exec.getOwnerUserId());
+}
 
 
-TLS trust (meest voorkomende issue)
+=========
+5) Waar haal je jobUid vandaan in de pod?
 
-Java/Spring vertrouwt niet automatisch de Kubernetes CA.
+Dat kan op 3 manieren:
 
-Je moet expliciet de CA vertrouwen.
+A) Backend geeft jobUid al mee als env var in de Job spec (makkelijkste)
+Bij create Job: ENV JOB_UID=<created.metadata.uid>
+Maar let op: uid is pas bekend na create → dus je moet de spec na create “patchen” of je start pod met execId en backend zoekt later pod→jobUid.
 
-Optie A – JVM truststore (meest robuust):
-	•	Mount /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-	•	Importeer in truststore bij startup
+B) Pod stuurt eigen Pod UID + backend resolve’t naar ownerRef Job UID
+Pod kan pod UID lezen via Downward API:
+	•	metadata.uid
+Backend kan met Fabric8: pod ophalen → ownerReferences → jobUid.
 
-Optie B – Spring Resource Server config:
-Spring Boot ≥ 3.1 kan hiermee omgaan als JVM CA goed staat.
+C) Pod stuurt niets behalve execId, backend doet lookup op pod identity + network
+Lastiger zonder extra signalen.
 
-Als je dit niet doet krijg je:
-	•	PKIX path building failed
-	•	unable to find valid certification path
+Mijn voorkeur: B (pod UID) of A (jobUid in env).
