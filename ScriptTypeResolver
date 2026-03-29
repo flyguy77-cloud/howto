@@ -1,0 +1,320 @@
+Gebruik een resolver/registry-pattern:
+	•	ScriptRuntimeDetector
+	•	ScriptRuntime
+	•	ScriptExecutionSpec
+
+en laat JobExecutionService alleen nog een kant-en-klare execution spec uitvoeren.
+
+⸻
+
+Waarom dit de juiste plek is
+
+Je hebt nu grofweg deze lagen:
+	•	WorkflowRunner → volgorde
+	•	WorkflowNodeExecutor → node-type routing
+	•	JobExecutionService → K8s Job bouwen/starten
+
+De vraag:
+
+“Welk command moet ik draaien voor dit script?”
+
+is execution voorbereiding, geen workflowlogica.
+
+Dus dit hoort het best thuis tussen:
+	•	WorkflowNodeExecutor
+	•	en JobExecutionService
+
+⸻
+
+advies: 3 kleine bouwstenen
+
+1. ScriptRuntime
+
+Een enum met ondersteunde runtimes.
+
+public enum ScriptRuntime {
+    PYTHON,
+    R,
+    BASH,
+    POWERSHELL,
+    UNKNOWN
+}
+
+
+⸻
+
+2. ScriptExecutionSpec
+
+Dit is het resultaat van detectie.
+
+public record ScriptExecutionSpec(
+        ScriptRuntime runtime,
+        String image,
+        List<String> command,
+        List<String> args
+) {}
+
+Bijvoorbeeld:
+	•	Python:
+	•	image = my-python-runner:latest
+	•	command = ["python"]
+	•	args = ["/work/script.py"]
+	•	R:
+	•	image = my-r-runner:latest
+	•	command = ["Rscript"]
+	•	args = ["/work/script.R"]
+
+⸻
+
+3. ScriptRuntimeResolver
+
+Een aparte service/component.
+
+@Component
+public class ScriptRuntimeResolver {
+
+    public ScriptExecutionSpec resolve(String scriptPath) {
+
+        String lower = scriptPath.toLowerCase();
+
+        if (lower.endsWith(".py")) {
+            return new ScriptExecutionSpec(
+                    ScriptRuntime.PYTHON,
+                    "my-python-runner:latest",
+                    List.of("python"),
+                    List.of(scriptPath)
+            );
+        }
+
+        if (lower.endsWith(".r")) {
+            return new ScriptExecutionSpec(
+                    ScriptRuntime.R,
+                    "my-r-runner:latest",
+                    List.of("Rscript"),
+                    List.of(scriptPath)
+            );
+        }
+
+        if (lower.endsWith(".sh")) {
+            return new ScriptExecutionSpec(
+                    ScriptRuntime.BASH,
+                    "my-bash-runner:latest",
+                    List.of("bash"),
+                    List.of(scriptPath)
+            );
+        }
+
+        throw new IllegalStateException("Unsupported script type: " + scriptPath);
+    }
+}
+
+
+⸻
+
+In welke klasse roep je dit aan?
+
+Beste plek: WorkflowNodeExecutor
+
+Omdat daar:
+	•	RunScript node wordt afgehandeld
+	•	je al weet welk script uitgevoerd moet worden
+	•	je nog vóór JobExecutionService zit
+
+Dus:
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowNodeExecutor {
+
+    private final ScriptRuntimeResolver runtimeResolver;
+    private final JobExecutionService jobExecutionService;
+    private final JobCompletionAwaiter awaiter;
+
+    public void execute(NodeEntity node, GraphModel graph, UUID workflowExecId) {
+
+        switch (node.getType()) {
+
+            case RUN_SCRIPT -> {
+                UUID loadScriptNodeId = graph.resolveRequiredLoadScript(node.getId());
+                NodeEntity loadScriptNode = graph.getNode(loadScriptNodeId);
+
+                String scriptPath = loadScriptNode.getScriptPath();
+
+                ScriptExecutionSpec spec = runtimeResolver.resolve(scriptPath);
+
+                UUID jobExecId = jobExecutionService.executeScriptJobInternal(
+                        node,
+                        loadScriptNode,
+                        spec,
+                        workflowExecId
+                );
+
+                awaiter.await(jobExecId);
+            }
+
+            case LOAD_SCRIPT -> {
+                // no-op
+            }
+
+            case END -> {
+                // workflow finished
+            }
+
+            default -> throw new IllegalStateException(
+                    "Unsupported node type: " + node.getType()
+            );
+        }
+    }
+}
+
+
+⸻
+
+Wat doet JobExecutionService dan nog?
+
+Alleen:
+	•	JobExecution record aanmaken
+	•	K8s Job bouwen op basis van ScriptExecutionSpec
+	•	pod starten
+	•	watchers starten
+
+Bijvoorbeeld:
+
+@Service
+@RequiredArgsConstructor
+public class JobExecutionService {
+
+    public UUID executeScriptJobInternal(
+            NodeEntity runScriptNode,
+            NodeEntity loadScriptNode,
+            ScriptExecutionSpec spec,
+            UUID workflowExecId
+    ) {
+        UUID jobExecId = UUID.randomUUID();
+
+        // gebruik spec.image(), spec.command(), spec.args()
+        // plus jouw env vars / token / entrypoint
+
+        return jobExecId;
+    }
+}
+
+
+⸻
+
+Nog netter: detectie op extensie + shebang
+
+Alleen op extensie is prima voor MVP.
+Maar als je straks robuuster wilt zijn, kun je:
+	1.	eerst extensie checken
+	2.	als onbekend: eerste regel lezen
+	•	#!/usr/bin/env python
+	•	#!/usr/bin/env Rscript
+	•	#!/bin/bash
+
+Dan krijg je:
+
+@Component
+public class ScriptRuntimeResolver {
+
+    public ScriptExecutionSpec resolve(String scriptPath, String scriptContent) {
+        String lower = scriptPath.toLowerCase();
+
+        if (lower.endsWith(".py")) {
+            return pythonSpec(scriptPath);
+        }
+        if (lower.endsWith(".r")) {
+            return rSpec(scriptPath);
+        }
+        if (lower.endsWith(".sh")) {
+            return bashSpec(scriptPath);
+        }
+
+        if (scriptContent != null && scriptContent.startsWith("#!")) {
+            String firstLine = scriptContent.lines().findFirst().orElse("");
+            if (firstLine.contains("python")) return pythonSpec(scriptPath);
+            if (firstLine.contains("Rscript")) return rSpec(scriptPath);
+            if (firstLine.contains("bash")) return bashSpec(scriptPath);
+        }
+
+        throw new IllegalStateException("Unsupported script type: " + scriptPath);
+    }
+
+    private ScriptExecutionSpec pythonSpec(String scriptPath) {
+        return new ScriptExecutionSpec(
+                ScriptRuntime.PYTHON,
+                "my-python-runner:latest",
+                List.of("python"),
+                List.of(scriptPath)
+        );
+    }
+
+    private ScriptExecutionSpec rSpec(String scriptPath) {
+        return new ScriptExecutionSpec(
+                ScriptRuntime.R,
+                "my-r-runner:latest",
+                List.of("Rscript"),
+                List.of(scriptPath)
+        );
+    }
+
+    private ScriptExecutionSpec bashSpec(String scriptPath) {
+        return new ScriptExecutionSpec(
+                ScriptRuntime.BASH,
+                "my-bash-runner:latest",
+                List.of("bash"),
+                List.of(scriptPath)
+        );
+    }
+}
+
+
+⸻
+
+Waarom niet direct in Docker/entrypoint oplossen?
+
+Omdat je dan runtime-detectie in shell stopt, en dat wordt snel rommelig:
+	•	moeilijk te testen
+	•	moeilijk te valideren
+	•	moeilijk uit te breiden
+	•	backend verliest controle over image-keuze
+
+De backend moet juist bepalen:
+	•	welke image
+	•	welk command
+	•	welke args
+
+De container moet alleen uitvoeren.
+
+⸻
+
+Samenvatting
+
+Beste aanpak
+
+Maak een aparte component:
+	•	ScriptRuntimeResolver
+
+Laat die teruggeven:
+	•	ScriptExecutionSpec
+
+Roep die aan in:
+	•	WorkflowNodeExecutor
+
+En laat:
+	•	JobExecutionService
+
+alleen nog uitvoeren op basis van die spec.
+
+⸻
+
+Concreet advies qua klassenaam
+
+Ik zou deze namen gebruiken:
+	•	ScriptRuntimeResolver
+	•	ScriptExecutionSpec
+	•	ScriptRuntime
+
+Dat is helder, uitbreidbaar en testbaar.
+
+Als je wilt, kan ik hier direct ook de Mockito unit tests voor schrijven, plus een voorbeeld hoe JobExecutionService daar de Fabric8 JobBuilder mee opbouwt.
