@@ -1,0 +1,127 @@
+Ja — hier lopen vaak drie dingen door elkaar heen:
+	1.	het jar-bestand dat je in drivers/ zet
+	2.	de Java driver class die je aan JayDeBeApi meegeeft
+	3.	de JDBC URL die bij Hive hoort
+
+Voor HiveServer2 is de driver class gewoon:
+
+"org.apache.hive.jdbc.HiveDriver"
+
+en de JDBC URL begint met:
+
+jdbc:hive2://
+
+Dat staat ook zo in de officiële HiveServer2 clientdocumentatie.  ￼
+
+Welke jar heb je nodig?
+
+In de praktijk wil je meestal deze in je drivers/ directory zetten:
+
+hive-jdbc-<versie>-standalone.jar
+
+Dus bijvoorbeeld:
+
+/opt/jdbc/hive-jdbc-3.1.3-standalone.jar
+
+of
+
+/opt/jdbc/hive-jdbc-4.2.0-standalone.jar
+
+Waarom de -standalone.jar?
+Omdat de gewone hive-jdbc-<versie>.jar klein is en lang niet alle dependencies bevat, terwijl de standalone-variant juist bedoeld is om veel van die afhankelijkheden al mee te nemen. Dat zie je ook direct terug in Maven Central: bij 3.1.2 is de gewone jar ongeveer 125 KB, terwijl de standalone jar ruim 72 MB is.  ￼
+
+Dat verschil is niet cosmetisch; dat is precies het verschil tussen:
+	•	“hier is de drivercode”
+	•	en
+	•	“hier is de driver plus de halve verhuiswagen erachteraan”
+
+Hoe vertaalt dat naar org.apache...?
+
+Die vertaalslag is:
+	•	Maven/artifact naam: org.apache.hive:hive-jdbc
+	•	jar-bestand: hive-jdbc-3.1.3-standalone.jar
+	•	Java class name: org.apache.hive.jdbc.HiveDriver
+
+Dus:
+
+conn = jaydebeapi.connect(
+    "org.apache.hive.jdbc.HiveDriver",
+    "jdbc:hive2://host:10000/default",
+    ["user", "password"],
+    ["/opt/jdbc/hive-jdbc-3.1.3-standalone.jar"]
+)
+
+De org.apache... is dus niet de naam van het jar-bestand, maar de fully qualified Java class name van de driver in dat jar. Hive documenteert expliciet dat org.apache.hive.jdbc.HiveDriver de JDBC driver class is voor HiveServer2.  ￼
+
+Welke versie moet jij pakken?
+
+Mijn advies:
+	•	Pak bij voorkeur dezelfde major/minor versie als jouw Hive-server of vendor-distributie
+	•	Gebruik bij voorkeur de standalone variant
+	•	Als jouw platform een vendor build gebruikt, zoals Cloudera/HDP-achtige distributies, gebruik dan liever de bijbehorende vendor driver in plaats van blind upstream Apache jars
+
+Waarom? Omdat “Hive” in enterprises vaak eigenlijk “Hive plus een distributie met eigen combinaties van auth, Thrift, Hadoop libs en TLS-fratsen” is. Je wilt dan niet een random Apache jar erin gooien en hopen dat alles gezellig blijft.
+
+Praktisch voorbeeld
+
+Stel je gebruikt Hive 3.1.x, dan is dit een prima start:
+
+drivers/
+└── hive-jdbc-3.1.3-standalone.jar
+
+Python:
+
+import jaydebeapi
+
+JARS = ["/opt/jdbc/hive-jdbc-3.1.3-standalone.jar"]
+
+conn = jaydebeapi.connect(
+    "org.apache.hive.jdbc.HiveDriver",
+    "jdbc:hive2://my-hive-host:10000/default",
+    ["username", "password"],
+    JARS
+)
+
+Wanneer gaat dit alsnog stuk?
+
+Zelfs met de juiste jar kun je nog tegen deze klassiekers aanlopen:
+	•	verkeerde Java-versie
+	•	Kerberos/SSL nodig maar niet geconfigureerd
+	•	verkeerde Hive-versie vs driver-versie
+	•	vendor-specifieke dependency nodig
+	•	geen standalone jar gebruikt maar alleen de kleine gewone jar
+
+Dus als je met alleen de juiste driver class nog een ClassNotFoundException, auth-fout of transportfout krijgt, zit het meestal niet meer in de org.apache... string, maar in de omgeving eromheen.
+
+Mijn nuchtere advies
+
+Voor jouw drivers/ dir zou ik niet creatief doen. Gewoon:
+
+/opt/jdbc/hive-jdbc-<jouw-versie>-standalone.jar
+
+En in Python:
+
+"org.apache.hive.jdbc.HiveDriver"
+
+Dat is de standaard, officiële combinatie voor HiveServer2.  ￼
+
+TL;DR
+
+Gebruik meestal:
+
+hive-jdbc-<versie>-standalone.jar
+
+en koppel die aan:
+
+"org.apache.hive.jdbc.HiveDriver"
+
+met een URL als:
+
+jdbc:hive2://host:10000/db
+
+Dat is dus:
+	•	jar = bestand
+	•	org.apache.hive.jdbc.HiveDriver = Java class
+	•	jdbc:hive2://... = connectiestring  ￼
+
+Als je wilt, zet ik dit meteen om naar een volledig werkend Python-snippet met JayDeBeApi, inclusief Dockerfile en een voorbeeld voor Hive met username/password of Kerberos.
