@@ -1,0 +1,159 @@
+Ja, expliciet ziet dat er meestal zo uit: JAVA_HOME zetten, Java in de image installeren, JDBC-jars op een vaste plek neerzetten, en desnoods JPype de JVM handmatig laten starten met classpath. JPype gebruikt normaal JAVA_HOME om de JVM te vinden, en kan anders ook expliciet met een pad naar libjvm.so worden gestart. Voor Hive is JDBC juist de aanbevolen clientroute richting HiveServer2.  ￼
+
+Praktische Docker-config
+
+Ik zou hem zo opzetten:
+
+FROM python:3.11-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
+    PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH \
+    JDBC_DIR=/opt/jdbc \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-17-jre-headless \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY drivers/ ${JDBC_DIR}/
+COPY . /app
+
+CMD ["python", "main.py"]
+
+JPype kan de JVM automatisch vinden via JAVA_HOME, dus dit is meestal al genoeg zolang het Java-pad klopt in de image.  ￼
+
+Python-code, expliciet met JVM/classpath
+
+Ik zou het liever expliciet doen dan vertrouwen op magie, zeker in K8s. Zo voorkom je dat je later in een pod ineens “JVM not found” of “driver class not found” krijgt:
+
+import os
+import jpype
+import jaydebeapi
+
+JAVA_HOME = os.environ["JAVA_HOME"]
+JDBC_DIR = os.environ.get("JDBC_DIR", "/opt/jdbc")
+
+JARS = [
+    f"{JDBC_DIR}/hive-jdbc-standalone.jar",
+]
+
+if not jpype.isJVMStarted():
+    jpype.startJVM(
+        jpype.getDefaultJVMPath(),
+        "-Xms64m",
+        "-Xmx256m",
+        classpath=JARS,
+    )
+
+conn = jaydebeapi.connect(
+    "org.apache.hive.jdbc.HiveDriver",
+    "jdbc:hive2://hiveserver:10000/default",
+    ["user", "password"],
+    JARS,
+)
+
+cur = conn.cursor()
+cur.execute("SELECT 1")
+print(cur.fetchall())
+cur.close()
+conn.close()
+
+JPype documenteert zowel getDefaultJVMPath() als startJVM(..., classpath=[...]), dus dit is een nette, voorspelbare manier om de Java-kant op te starten.  ￼
+
+Nog explicieter: JVM-opties vanuit de container
+
+Als je TLS, truststores of heap-size nodig hebt, zet ik dat meestal in env vars zodat je pod-spec het kan sturen:
+
+ENV JAVA_TOOL_OPTIONS="-Xms64m -Xmx256m"
+
+Of in Kubernetes:
+
+env:
+  - name: JAVA_TOOL_OPTIONS
+    value: "-Xms64m -Xmx256m -Djavax.net.ssl.trustStore=/certs/truststore.jks -Djavax.net.ssl.trustStorePassword=changeit"
+
+Dat is vooral handig als je later van simpele auth naar SSL/Kerberos-achtige fratsen gaat. HiveServer2 ondersteunt JDBC-clients en beveiligingsinstellingen aan die kant.  ￼
+
+Wordt je image dan opgeblazen?
+
+Ja, wel degelijk een stuk. Niet per se absurd, maar Java is geen Tic Tac. De officiële Eclipse Temurin JRE-images laten voor recente JRE-tags een compressed size van grofweg ~99 MB op linux/amd64 zien. Dus alleen de runtime erbij is al een serieuze hap.  ￼
+
+Maar: je kunt dit best netjes houden.
+
+Zo hou je hem redelijk klein
+
+Gebruik:
+	•	python:3.11-slim als basis in plaats van Ubuntu full
+	•	openjdk-17-jre-headless in plaats van JDK
+	•	--no-install-recommends
+	•	geen build tooling in runtime-image
+	•	een standalone Hive JDBC jar in plaats van 40 losse dependency-jars
+	•	eventueel aparte worker-image alleen voor JDBC/Hive taken
+
+De officiële Python images hebben ook slim-tags juist om de image kleiner/leaner te houden dan de vollere varianten.  ￼
+
+Mijn eerlijke take
+
+Voor een paar incidentele Python+JDBC taken: prima, doen.
+Voor structureel enterprise-gebruik in jouw workflow-engine: dit wordt al snel een hybride monster:
+
+Python -> JPype -> JVM -> JDBC -> Hive
+
+Dat werkt, maar het is wel een techniekstapel met meer scharnieren dan nodig. Als Hive/JDBC een vaste capability in je platform wordt, dan is een Java-based worker vaak strakker, kleiner qua cognitieve complexiteit, en makkelijker te debuggen. Hive zelf zit immers toch al in het JDBC-kamp.  ￼
+
+Mijn praktische advies voor jou
+
+Ik zou kiezen uit 2 smaken:
+
+Smaak 1 — snel werkend
+	•	Python image
+	•	headless JRE
+	•	JayDeBeApi + JPype
+	•	Hive standalone JDBC jar
+	•	expliciete JAVA_HOME + jpype.startJVM(...)
+
+Smaak 2 — netter op termijn
+	•	aparte Java worker voor Hive/JDBC nodes
+	•	Python worker alleen voor pure Python scripts
+	•	dus niet elk Python-jobje opzadelen met een halve JVM als dat niet nodig is
+
+Dat tweede is architectonisch gewoon schoner. Minder “keukenla vol adapters”.
+
+Hier is nog een compacte variant die ik zelf eerder zou deployen:
+
+FROM python:3.11-slim
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+ENV JDBC_DIR=/opt/jdbc
+ENV PYTHONUNBUFFERED=1
+ENV JAVA_TOOL_OPTIONS="-Xms64m -Xmx256m"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-17-jre-headless \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY drivers/ ${JDBC_DIR}/
+COPY main.py /app/main.py
+
+CMD ["python", "/app/main.py"]
+
+En in requirements.txt:
+
+JayDeBeApi==1.2.3
+JPype1
+
+Wil je dat ik hier meteen een volledig Kubernetes Job YAML naast zet, inclusief Secret, env, mounted driver jars en een testscript met SELECT 1?
