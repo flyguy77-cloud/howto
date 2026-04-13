@@ -1,0 +1,229 @@
+Ja. De truc is: je container moet niet alleen Python hebben, maar ook een werkende JVM plus de juiste JDBC-driver jars. JayDeBeApi is namelijk in feite een Python-laag bovenop JDBC, meestal via JPype, en die start een Java VM in je proces. Zonder Java in de image loopt dat meteen scheef. HiveServer2 wordt vervolgens normaal benaderd via JDBC-clients zoals Beeline of andere JDBC-drivers.  ￼
+
+Wat moet er in je image zitten
+
+Minimaal dit:
+	•	Python
+	•	Java runtime, meestal OpenJDK 17 of wat jouw driver ondersteunt
+	•	JayDeBeApi
+	•	JPype1
+	•	de Hive JDBC driver jar(s)
+	•	eventueel extra auth-/TLS-jars, afhankelijk van jouw cluster
+	•	een correcte JAVA_HOME
+	•	een classpath of expliciete jars=[...] in je Python-code zodat de JVM de driver ook echt vindt  ￼
+
+Belangrijk inzicht
+
+Er zijn in de praktijk twee lagen die mensen vaak door elkaar halen:
+	1.	Python-package installeren
+	2.	JVM laten starten met de juiste JDBC classes
+
+Als pip install jaydebeapi lukt, ben je pas halverwege. De echte ellende begint meestal bij:
+	•	JAVA_HOME ontbreekt
+	•	JDBC-driver jar niet gevonden
+	•	dependency-jars van Hive ontbreken
+	•	Kerberos / TLS / truststore ontbreekt
+	•	verkeerde Java-versie voor de driver  ￼
+
+⸻
+
+Mijn advies: bouw geen Ubuntu-image “from scratch” als het niet hoeft
+
+Voor dit soort use case is een python:3.11-slim of python:3.12-slim basis meestal fijner dan kale Ubuntu. Minder ballast, minder gepruts. Ubuntu kan ook, maar dan ben je vooral pakketbeheerder aan het spelen in plaats van software engineer met zelfrespect.
+
+Voorbeeld Dockerfile
+
+Hier is een degelijke basis:
+
+FROM python:3.11-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+# Systeempackages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-17-jre-headless \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# JDBC drivers
+COPY drivers/ /opt/jdbc/
+
+# App
+COPY . /app
+
+CMD ["python", "main.py"]
+
+requirements.txt:
+
+JayDeBeApi==1.2.3
+JPype1
+
+JayDeBeApi op PyPI staat nog op versie 1.2.3, dus pinnen is hier verstandig; de library zelf verandert niet wild meer, terwijl de combinatie met JPype1 in de praktijk juist wél gevoelig kan zijn. Er zijn ook recente issues rond JPype-combinaties, dus een expliciete versiepinning in jouw project is geen overbodige luxe.  ￼
+
+⸻
+
+Hoe je Python-code eruit moet zien
+
+Bijvoorbeeld zo:
+
+import os
+import jaydebeapi
+
+JDBC_URL = "jdbc:hive2://hiveserver.example.local:10000/default"
+JDBC_DRIVER = "org.apache.hive.jdbc.HiveDriver"
+
+JDBC_JARS = [
+    "/opt/jdbc/hive-jdbc-standalone.jar"
+]
+
+conn = jaydebeapi.connect(
+    jclassname=JDBC_DRIVER,
+    url=JDBC_URL,
+    driver_args={
+        "user": os.getenv("HIVE_USERNAME"),
+        "password": os.getenv("HIVE_PASSWORD"),
+    },
+    jars=JDBC_JARS,
+)
+
+curs = conn.cursor()
+curs.execute("SELECT 1")
+rows = curs.fetchall()
+print(rows)
+
+curs.close()
+conn.close()
+
+De essentie is dat JPype een JVM start en dat jouw driver-class, bijvoorbeeld org.apache.hive.jdbc.HiveDriver, via de meegegeven jars beschikbaar moet zijn op de classpath. HiveServer2 is juist bedoeld voor JDBC-clients.  ￼
+
+⸻
+
+Welke Hive JDBC jar moet je nemen?
+
+Hier zit vaak de echte adder onder het gras.
+
+Voor Hive wil je meestal niet alleen een losse mini-jar, maar een standalone / uber / shaded JDBC jar als jouw distributie die levert. Anders moet je een halve kerstboom aan dependency-jars mee slepen. Apache Hive documenteert JDBC-gebruik via HiveServer2 en Beeline, maar de exacte jar-set hangt vaak ook af van je distributie en security setup.  ￼
+
+Praktisch dus:
+	•	Gebruik bij voorkeur de standalone Hive JDBC jar van jouw platform/distributie
+	•	Of neem exact de jars over die ook door een werkende Beeline/JDBC-client worden gebruikt
+	•	Test lokaal eerst met dezelfde driver-versie als in productie
+
+⸻
+
+Voor Kubernetes specifiek
+
+In K8s wil je meestal dit meegeven via:
+	•	Secret voor username/password
+	•	ConfigMap voor niet-gevoelige config
+	•	eventueel een mounted truststore voor TLS
+	•	eventueel een mounted keytab / Kerberos-config als je cluster dat gebruikt
+
+Bijvoorbeeld als env vars:
+
+env:
+  - name: HIVE_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: hive-credentials
+        key: username
+  - name: HIVE_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: hive-credentials
+        key: password
+
+En als je TLS of truststore nodig hebt, geef je die vaak door met JVM-opties, bijvoorbeeld via JAVA_TOOL_OPTIONS. HiveServer2 ondersteunt ook SSL/truststore-instellingen in JDBC-connecties.  ￼
+
+Bijvoorbeeld:
+
+env:
+  - name: JAVA_TOOL_OPTIONS
+    value: "-Djavax.net.ssl.trustStore=/certs/truststore.jks -Djavax.net.ssl.trustStorePassword=changeit"
+
+
+⸻
+
+Wat vaak misgaat
+
+1. JAVA_HOME niet gezet
+
+Dan kan JPype gaan klieren of de JVM niet goed vinden. De docs noemen expliciet dat je Java moet hebben en JAVA_HOME moet instellen.  ￼
+
+2. Alleen jaydebeapi geïnstalleerd, maar geen Java
+
+Dan heb je een prachtige brug naar een rivier zonder water.  ￼
+
+3. Verkeerde of incomplete driver jars
+
+Vooral bij Hive komt dit vaak voor als je geen standalone jar gebruikt. Dan mis je transitive dependencies. JDBC op Hive loopt via HiveServer2-clients, dus die driverlaag moet compleet zijn.  ￼
+
+4. Auth mismatch
+
+Bijvoorbeeld cluster verwacht Kerberos of SSL, maar jouw URL of JVM-config doet alleen username/password. Apache Hive documenteert meerdere security-/SSL-instellingen voor HiveServer2-connecties.  ￼
+
+5. JPype1 versiegedoe
+
+Er zijn bekende compatibiliteitsissues en regressies geweest. Daarom zou ik in een productie-image altijd versies pinnen en die combinatie vasttesten in CI.  ￼
+
+⸻
+
+Mijn nuchtere advies voor jouw platform
+
+Voor jouw workflow/K8s-architectuur zou ik dit zo doen:
+
+Optie A — simpel en robuust
+
+Maak één worker-image met:
+	•	Python
+	•	Java runtime
+	•	JayDeBeApi + JPype1
+	•	alle JDBC drivers in /opt/jdbc
+	•	entrypoint dat jouw script runt
+
+Dat is top als je ook andere Python-scripts wilt draaien die soms JDBC nodig hebben.
+
+Optie B — nog netter
+
+Werk met een generieke worker-image en mount per taak alleen de benodigde scriptbestanden/config.
+Dan hoef je niet voor elke workflow een andere image te bakken.
+
+Optie C — architectonisch strakker
+
+Als Hive/JDBC echt een first-class capability wordt in je platform, overweeg dan een Java worker voor JDBC-taken in plaats van Python+JayDeBeApi. Dat scheelt een extra bruglaag. JayDeBeApi werkt prima, maar je hangt dan Python → JPype → JVM → JDBC → Hive aan elkaar. Dat werkt, maar het is wel een ketting met meer scharnierpunten dan strikt nodig. De Hive-kant zelf is immers al puur JDBC-georiënteerd.  ￼
+
+Eerlijk gezegd:
+voor incidentele Python-scripts met JDBC is JayDeBeApi prima. Voor structurele enterprise-executie vind ik een Java worker vaak cleaner.
+
+⸻
+
+Mijn concrete minimum setup
+
+Als je morgen iets werkends wilt:
+	1.	Base image: python:3.11-slim
+	2.	Installeer openjdk-17-jre-headless
+	3.	Zet JAVA_HOME
+	4.	Pin:
+	•	JayDeBeApi==1.2.3
+	•	een expliciete JPype1 versie die jij getest hebt
+	5.	Copy je Hive JDBC standalone jar naar /opt/jdbc/
+	6.	Geef credentials via K8s Secret
+	7.	Test in container met een mini-script dat alleen SELECT 1 doet
+	8.	Pas daarna pas je echte workflow-script erop los
+
+⸻
+
+Kortste bruikbare antwoord
+
+Je moet de image preppen met Python + een Java runtime + JayDeBeApi/JPype1 + de juiste Hive JDBC-driver jars + correcte JAVA_HOME en eventueel SSL/Kerberos-config. In de pod draait jouw Python-proces, maar daarbinnen start JPype een JVM die de JDBC-driver laadt en zo met HiveServer2 praat.  ￼
+
+Als je wilt, zet ik dit meteen om naar een volledig werkende Dockerfile + Kubernetes Job YAML + Python voorbeeldscript voor Hive.
