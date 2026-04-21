@@ -1,0 +1,636 @@
+Ja — dit is precies het punt waar je workflow-engine van “nodes achter elkaar” naar een echte dataflow gaat.
+
+En hier zit de kern:
+
+De graph moet weten welke nodes uitgevoerd worden, maar niet zelf inhoudelijk weten wat de bestanden zijn.
+De graph bepaalt afhankelijkheden en volgorde.
+De nodes en hun output-contract bepalen welke files beschikbaar komen.
+
+Dus in jouw scenario:
+
+* runScript1 maakt a.csv
+* runScript2 maakt b.csv
+* runScript3 maakt c.csv
+* runScript4 gebruikt die drie als input en maakt report.pdf
+
+dan moet je dit niet “los laten zweven” in de filestructuur, maar expliciet modelleren.
+
+⸻
+
+De juiste manier om dit te regelen
+
+Je hebt eigenlijk 2 lagen nodig:
+
+1. Graph / dependency laag
+
+Die bepaalt:
+
+* welke node na welke mag starten
+* of node4 pas mag starten als 1, 2 en 3 klaar zijn
+* of parallel execution mag
+* welke predecessors node4 heeft
+
+2. Data / artifact laag
+
+Die bepaalt:
+
+* welke bestanden een node oplevert
+* waar die bestanden staan
+* welke bestanden een volgende node verwacht
+
+⸻
+
+Dus: hoe weet de graph welke nodes uitgevoerd worden?
+
+Niet door file-namen te lezen
+
+De graph moet niet denken:
+
+“ik zie ergens drie csv files dus nu mag node4 draaien”
+
+Dat is te impliciet en te fragiel.
+
+Wel door edges en node status
+
+De graph weet:
+
+* node4 heeft incoming = [node1, node2, node3]
+* pas als die drie op SUCCEEDED staan, mag node4 starten
+
+Dus:
+
+de graph bepaalt uitvoerbaarheid op basis van dependency completion, niet op basis van files.
+
+⸻
+
+Wat heb je daarvoor nodig?
+
+Je GraphModel met:
+
+* nodes
+* outgoing
+* incoming
+* startNodes
+
+is hiervoor precies goed.
+
+Bijvoorbeeld:
+
+node1 --->\
+           \
+node2 -----> node4
+           /
+node3 --->/
+
+Dan is:
+
+incoming.get("node4") = ["node1", "node2", "node3"]
+
+En dan weet je:
+
+node4 is executable when all predecessors succeeded
+
+⸻
+
+Dus wat moet je toevoegen?
+
+1. Een methode in GraphModel
+
+Bijvoorbeeld:
+
+public boolean isExecutable(
+        String nodeId,
+        Map<String, NodeExecutionStatus> statuses
+) {
+    List<String> predecessors = incoming.getOrDefault(nodeId, List.of());
+    return predecessors.stream()
+            .allMatch(pred -> statuses.get(pred) == NodeExecutionStatus.SUCCEEDED);
+}
+
+Of netter met helper:
+
+public List<String> predecessors(String nodeId) {
+    return incoming.getOrDefault(nodeId, List.of());
+}
+
+en dan in de runner:
+
+boolean executable = graph.predecessors(nodeId).stream()
+        .allMatch(pred -> statusStore.isSucceeded(workflowExecId, pred));
+
+⸻
+
+Maar hoe weet node4 welke csv’s het moet pakken?
+
+Hier moet je een tweede concept introduceren:
+
+Node output manifest
+
+Elke runscript node schrijft naast zijn bestanden ook een klein metadata-bestand weg, bijvoorbeeld:
+
+/shared/team/executions/2026-04-21/{workflowExecId}/temp/node1/manifest.json
+/shared/team/executions/2026-04-21/{workflowExecId}/temp/node2/manifest.json
+/shared/team/executions/2026-04-21/{workflowExecId}/temp/node3/manifest.json
+
+Met inhoud zoals:
+
+{
+  "nodeId": "node1",
+  "outputs": [
+    {
+      "name": "customers",
+      "type": "csv",
+      "path": "/shared/team/executions/2026-04-21/exec-123/temp/node1/customers.csv"
+    }
+  ]
+}
+
+Dan hoeft node4 niet “blind” in directories te zoeken.
+
+⸻
+
+Hoe werkt dat in jouw scenario?
+
+Node1, 2, 3
+
+Schrijven elk:
+
+* hun csv file
+* een manifest.json
+
+Bijvoorbeeld:
+
+temp/node1/customers.csv
+temp/node1/manifest.json
+temp/node2/orders.csv
+temp/node2/manifest.json
+temp/node3/revenue.csv
+temp/node3/manifest.json
+
+Node4
+
+Kijkt niet zomaar naar “alle csv files”, maar:
+
+* vraagt aan de graph: wat zijn mijn predecessors?
+* leest de manifests van die predecessors
+* verzamelt daaruit de input files
+* draait zijn script met die paden
+
+⸻
+
+Waar hoort die logica?
+
+GraphModel
+
+Alleen:
+
+* predecessors / outgoing / incoming
+* executable bepalen
+
+WorkflowRunner
+
+Bepaalt:
+
+* welke node nu mag starten
+
+WorkflowNodeExecutor
+
+Voor node4:
+
+* haalt predecessors op uit graph
+* leest manifests van predecessors
+* bouwt inputlijst voor het script
+
+Dus:
+
+de graph weet welke nodes relevant zijn
+de executor weet welke artifacts van die nodes nodig zijn
+
+Dat is de juiste scheiding.
+
+⸻
+
+Concreet voorbeeld
+
+In GraphModel
+
+public record GraphModel(
+        Map<String, NodeEntity> nodes,
+        Map<String, List<String>> outgoing,
+        Map<String, List<String>> incoming,
+        List<String> startNodes
+) {
+    public List<String> predecessors(String nodeId) {
+        return incoming.getOrDefault(nodeId, List.of());
+    }
+    public List<String> successors(String nodeId) {
+        return outgoing.getOrDefault(nodeId, List.of());
+    }
+}
+
+⸻
+
+In WorkflowRunner
+
+Bij parallel scenario:
+
+public List<String> findExecutableNodes(
+        GraphModel graph,
+        Map<String, NodeExecutionStatus> statuses
+) {
+    return graph.nodes().keySet().stream()
+            .filter(nodeId -> statuses.get(nodeId) == null)
+            .filter(nodeId -> graph.predecessors(nodeId).stream()
+                    .allMatch(pred -> statuses.get(pred) == NodeExecutionStatus.SUCCEEDED))
+            .toList();
+}
+
+Voor MVP kun je dit nog simpel houden, maar dit is al future-proof.
+
+⸻
+
+In WorkflowNodeExecutor voor node4
+
+public void execute(NodeEntity node, GraphModel graph, UUID workflowExecId) {
+    switch (node.getType()) {
+        case RUN_SCRIPT -> {
+            List<String> predecessors = graph.predecessors(node.getId());
+            List<String> inputFiles = predecessors.stream()
+                    .map(pred -> manifestReader.read(workflowExecId, pred))
+                    .flatMap(manifest -> manifest.outputs().stream())
+                    .map(OutputArtifact::path)
+                    .toList();
+            RunScriptNodeRequestDto dto = new RunScriptNodeRequestDto(
+                    node.getScriptPath(),
+                    inputFiles,
+                    node.getArgs(),
+                    node.getEnv()
+            );
+            UUID jobExecId = jobExecutionService.executeScriptJob(dto);
+            awaiter.await(jobExecId);
+        }
+        default -> {
+            // ...
+        }
+    }
+}
+
+⸻
+
+Waarom dit beter is dan “gewoon alle csv’s uit temp lezen”
+
+Als node4 gewoon alles uit /temp leest, dan krijg je later problemen met:
+
+* oude files van vorige runs
+* parallel nodes
+* retries
+* dubbele bestandsnamen
+* niet weten welke file functioneel bij welke node hoort
+
+Dus:
+
+lees alleen de output van je directe predecessors
+niet van de hele temp-root.
+
+Dat maakt het deterministisch.
+
+⸻
+
+Mijn aanbeveling voor jouw scenario
+
+Gebruik deze combinatie
+
+Graph bepaalt:
+
+* node4 wacht op node1/2/3
+
+Iedere producer node schrijft:
+
+* outputbestand(en)
+* manifest.json
+
+Node4 leest:
+
+* predecessors uit graph
+* manifests van predecessors
+* bouwt daarmee inputlijst
+
+Dat is echt de nette en schaalbare oplossing.
+
+⸻
+
+Samengevat
+
+Hoe weet de graph welke nodes uitgevoerd worden?
+
+Door:
+
+* incoming
+* outgoing
+* node statuses
+
+Dus:
+
+* node4 mag pas als node1/2/3 SUCCEEDED zijn
+
+Hoe weet node4 welke csv’s input zijn?
+
+Niet uit de graph direct, maar via:
+
+* predecessors uit graph
+* manifests van die predecessors
+
+⸻
+
+Mijn korte oordeel
+
+Voor jouw use-case is dit de juiste lijn:
+
+* graph = orchestration
+* manifest = data contract
+* shared volume = artifact transport
+
+Dat is volwassen, helder en uitbreidbaar.
+
+Als je wilt, kan ik hier direct op doorgaan met:
+
+1. een manifest.json model in Java
+2. een ManifestReader / ManifestWriter
+3. hoe node4 precies zijn inputfiles samengesteld krijgt
+4. en hoe je dit combineert met parallel execution zonder de awaiter op elke node te hoeven gebruiken
+
+===========
+
+
+Ja — en dit is precies het punt waar je moet oppassen dat je geen infrastructuurdetail door je hele keten heen lekt.
+
+Je gevoel klopt dus:
+
+als pathResolver ineens tot in WorkflowRunner of WorkflowExecutionService omhoog moet, dan is dat een teken dat de verantwoordelijkheid nog niet helemaal goed ligt.
+
+Kort antwoord
+
+Nee, je moet pathResolver niet “naar boven doorduwen” tot aan de workflow execution laag.
+In plaats daarvan maak je een aparte artifact/context service die:
+
+* zelf pathResolver gebruikt
+* zelf manifests leest/schrijft
+* en door de WorkflowNodeExecutor wordt aangeroepen
+
+Dus:
+
+* JobExecutionService gebruikt pathResolver voor mounts/env vars
+* ArtifactService gebruikt pathResolver voor manifests/files
+* WorkflowNodeExecutor praat alleen met ArtifactService
+
+Dat is de nette scheiding.
+
+⸻
+
+Waarom dit belangrijk is
+
+Als je pathResolver omhoog gaat doorgeven aan:
+
+* WorkflowExecutionService
+* WorkflowRunner
+* GraphBuilder
+
+dan krijgen die lagen kennis van:
+
+* directorystructuren
+* shared volume layout
+* file naming
+* manifest locaties
+
+En dat wil je juist niet.
+
+Die lagen moeten alleen weten:
+
+* welke node volgt
+* welke node mag draaien
+* welke input artifacts nodig zijn
+
+Niet waar dat op disk ligt.
+
+⸻
+
+De juiste tussenlaag
+
+Nieuwe component: WorkflowArtifactService
+
+Bijvoorbeeld:
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowArtifactService {
+    private final WorkflowExecutionPathResolver pathResolver;
+    private final ObjectMapper objectMapper;
+    public void writeManifest(
+            String team,
+            String subteam,
+            UUID workflowExecId,
+            UUID jobExecId,
+            String nodeId,
+            LocalDate date,
+            NodeManifest manifest
+    ) {
+        ExecutionPaths paths = pathResolver.resolve(
+                team, subteam, workflowExecId, jobExecId, nodeId, date
+        );
+        Path manifestPath = Paths.get(paths.tempDir(), "manifest.json");
+        try {
+            Files.createDirectories(manifestPath.getParent());
+            objectMapper.writeValue(manifestPath.toFile(), manifest);
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not write manifest", e);
+        }
+    }
+    public NodeManifest readManifest(
+            String team,
+            String subteam,
+            UUID workflowExecId,
+            UUID jobExecId,
+            String nodeId,
+            LocalDate date
+    ) {
+        ExecutionPaths paths = pathResolver.resolve(
+                team, subteam, workflowExecId, jobExecId, nodeId, date
+        );
+        Path manifestPath = Paths.get(paths.tempDir(), "manifest.json");
+        try {
+            return objectMapper.readValue(manifestPath.toFile(), NodeManifest.class);
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not read manifest", e);
+        }
+    }
+    public List<String> resolveInputFiles(
+            String team,
+            String subteam,
+            UUID workflowExecId,
+            LocalDate date,
+            GraphModel graph,
+            String nodeId,
+            Function<String, UUID> jobExecResolver
+    ) {
+        return graph.predecessors(nodeId).stream()
+                .map(pred -> readManifest(
+                        team,
+                        subteam,
+                        workflowExecId,
+                        jobExecResolver.apply(pred),
+                        pred,
+                        date
+                ))
+                .flatMap(manifest -> manifest.outputs().stream())
+                .map(OutputArtifact::path)
+                .toList();
+    }
+}
+
+⸻
+
+Wat verandert er dan?
+
+WorkflowRunner
+
+Blijft dom:
+
+* bepaalt volgorde
+* bepaalt executable nodes
+
+WorkflowNodeExecutor
+
+Wordt iets slimmer:
+
+* vraagt input artifacts op bij WorkflowArtifactService
+
+JobExecutionService
+
+Blijft technisch:
+
+* maakt K8s job
+* mount volume
+* zet env vars
+
+Dus je trekt de file-layout logica niet omhoog, maar zet er een dedicated service naast.
+
+⸻
+
+Hoe ziet dat er dan uit in WorkflowNodeExecutor?
+
+@Service
+@RequiredArgsConstructor
+public class WorkflowNodeExecutor {
+    private final JobExecutionService jobExecutionService;
+    private final JobCompletionAwaiter awaiter;
+    private final WorkflowArtifactService artifactService;
+    public void execute(
+            NodeEntity node,
+            GraphModel graph,
+            UUID workflowExecId,
+            String team,
+            String subteam
+    ) {
+        switch (node.getType()) {
+            case RUN_SCRIPT -> {
+                List<String> inputFiles = artifactService.resolveInputFiles(
+                        team,
+                        subteam,
+                        workflowExecId,
+                        LocalDate.now(),
+                        graph,
+                        node.getId(),
+                        this::resolveJobExecIdForNode
+                );
+                RunScriptNodeRequestDto dto = new RunScriptNodeRequestDto(
+                        node.getScriptPath(),
+                        inputFiles,
+                        node.getArgs(),
+                        node.getEnv()
+                );
+                UUID jobExecId = jobExecutionService.executeScriptJob(dto);
+                awaiter.await(jobExecId);
+            }
+            default -> throw new IllegalStateException("Unsupported node");
+        }
+    }
+    private UUID resolveJobExecIdForNode(String nodeId) {
+        // later via repo of map
+        throw new UnsupportedOperationException("Implement me");
+    }
+}
+
+⸻
+
+Nog beter: geen pathResolver, maar alleen een WorkflowExecutionContext
+
+Als je het nog schoner wilt maken, kun je pathResolver zelfs helemaal wegstoppen achter een contextobject:
+
+public record WorkflowExecutionContext(
+        UUID workflowExecId,
+        String team,
+        String subteam,
+        LocalDate executionDate
+) {}
+
+Dan wordt:
+
+artifactService.resolveInputFiles(context, graph, nodeId)
+
+en:
+
+jobExecutionService.executeScriptJob(dto, context)
+
+Dat is vaak nog netter dan overal losse team/subteam/date parameters meegeven.
+
+⸻
+
+Mijn eerlijke aanbeveling
+
+Voor jouw codebase zou ik dit doen:
+
+Niet doen
+
+* pathResolver omhoog duwen naar WorkflowRunner of WorkflowExecutionService
+
+Wel doen
+
+* WorkflowArtifactService toevoegen
+* pathResolver daarin injecteren
+* WorkflowNodeExecutor laten praten met ArtifactService
+
+Eventueel met:
+
+* WorkflowExecutionContext
+
+als lichte contextdrager
+
+⸻
+
+Samengevat
+
+Je hebt gelijk dat het gek voelt als pathResolver ineens overal nodig wordt.
+Dat is meestal een teken dat je een missing abstraction hebt.
+
+Die missing abstraction is hier:
+
+Artifact / manifest service
+
+Dus:
+
+* pathResolver blijft laag
+* ArtifactService gebruikt hem
+* WorkflowNodeExecutor gebruikt ArtifactService
+* hogere lagen blijven schoon
+
+⸻
+
+Als je wilt, kan ik meteen een compacte set voor je uitschrijven:
+
+1. WorkflowExecutionContext
+2. WorkflowArtifactService
+3. NodeManifest
+4. hoe WorkflowNodeExecutor dan verandert zonder dat WorkflowRunner vies wordt
+
+
+
