@@ -633,4 +633,305 @@ Als je wilt, kan ik meteen een compacte set voor je uitschrijven:
 4. hoe WorkflowNodeExecutor dan verandert zonder dat WorkflowRunner vies wordt
 
 
+==========
+
+Exact — dát is de crux. Als alleen de pod toegang heeft tot het RWX-volume, dan moet de pod ook het manifest wegschrijven. Niet de backend.
+
+Dus mijn eerdere richting moet je dan iets aanscherpen:
+
+De backend bepaalt wáár het manifest moet komen.
+De pod schrijft het manifest daadwerkelijk weg.
+
+Dat is ook meteen de juiste scheiding.
+
+⸻
+
+De juiste verantwoordelijkheden
+
+Backend
+
+Doet:
+
+* execution paden bepalen
+* env vars meegeven aan de pod
+* weten welke node draait
+* weten waar temp/output/log dirs zitten
+
+Pod / script runtime
+
+Doet:
+
+* outputbestanden maken
+* manifestbestand schrijven
+* loggen naar joblog
+
+Dus als de pod als enige het volume ziet, dan is dat ook de enige plek waar file-artifacts en manifests fysiek kunnen worden aangemaakt.
+
+⸻
+
+Wat betekent dat concreet?
+
+Je geeft aan de pod via env vars mee:
+
+* TEMP_DIR
+* OUTPUT_DIR
+* NODE_ID
+* JOB_EXEC_ID
+* WORKFLOW_EXEC_ID
+* eventueel MANIFEST_PATH
+
+Bijvoorbeeld:
+
+.addNewEnv().withName("TEMP_DIR").withValue(paths.tempDir()).endEnv()
+.addNewEnv().withName("OUTPUT_DIR").withValue(paths.outputDir()).endEnv()
+.addNewEnv().withName("NODE_ID").withValue(nodeId).endEnv()
+.addNewEnv().withName("JOB_EXEC_ID").withValue(jobExecId.toString()).endEnv()
+.addNewEnv().withName("WORKFLOW_EXEC_ID").withValue(workflowExecId.toString()).endEnv()
+.addNewEnv().withName("MANIFEST_PATH").withValue(paths.tempDir() + "/manifest.json").endEnv()
+
+Dan weet de pod exact waar hij zijn manifest moet neerzetten.
+
+⸻
+
+Wie schrijft dat manifest dan?
+
+Optie A — het script zelf
+
+Dit is vaak de netste optie.
+
+Bijvoorbeeld Python script:
+
+import json
+import os
+temp_dir = os.environ["TEMP_DIR"]
+manifest_path = os.environ["MANIFEST_PATH"]
+node_id = os.environ["NODE_ID"]
+output_file = f"{temp_dir}/customers.csv"
+# schrijf echte output
+with open(output_file, "w") as f:
+    f.write("id,name\n1,Alice\n")
+manifest = {
+    "nodeId": node_id,
+    "outputs": [
+        {
+            "name": "customers",
+            "type": "csv",
+            "path": output_file
+        }
+    ]
+}
+with open(manifest_path, "w") as f:
+    json.dump(manifest, f, indent=2)
+
+Voordeel
+
+* script weet zelf welke bestanden hij heeft gemaakt
+* manifest klopt functioneel echt
+* geen shell-gokwerk
+
+⸻
+
+Optie B — entrypoint.sh schrijft (een deel van) het manifest
+
+Dat kan alleen als:
+
+* jij vooraf al weet welke outputbestanden komen
+* of scripts een eenvoudige conventie volgen
+
+Bijvoorbeeld:
+
+* alles wat in TEMP_DIR eindigt op .csv opnemen in manifest
+
+Maar dat is fragieler.
+
+Dus:
+
+mijn voorkeur = script zelf schrijft manifest
+
+⸻
+
+Hoe leest een latere node dat manifest dan?
+
+Ook via de pod, niet via de backend.
+
+Belangrijk punt:
+
+Als backend géén toegang heeft tot het volume, dan kan backend ook die manifests niet lezen.
+
+Dus dan moet je architectuur zijn:
+
+Node4 krijgt van de backend de predecessors door
+en de pod van node4 leest de manifests van die predecessors van het shared volume
+
+Dus:
+
+Backend / graph
+
+Weet:
+
+* node4 heeft predecessors node1, node2, node3
+
+Pod van node4
+
+Krijgt bijvoorbeeld als env var:
+
+* PREDECESSOR_NODE_IDS=node1,node2,node3
+* WORKFLOW_ROOT=/shared/team/executions/.../{workflowExecId}
+
+En dan leest het script of entrypoint:
+
+/shared/.../temp/node1/manifest.json
+/shared/.../temp/node2/manifest.json
+/shared/.../temp/node3/manifest.json
+
+⸻
+
+Belangrijk inzicht
+
+Als de backend geen volume-access heeft, dan moet je manifest-gebruik ook runtime-in-pod oplossen, niet in Java backend.
+
+Dus mijn eerdere ArtifactService in de backend is dan niet meer de juiste plek voor file-reads. Die kan dan hooguit:
+
+* paden construeren
+* node dependencies bepalen
+
+Maar niet:
+
+* manifests lezen/schrijven
+
+⸻
+
+Wat moet je dan in de backend doen?
+
+Alleen metadata en paden doorgeven
+
+Bijvoorbeeld in RunScriptNodeRequestDto:
+
+public record RunScriptNodeRequestDto(
+        String scriptPath,
+        List<String> predecessorNodeIds,
+        String workflowRoot,
+        String tempDir,
+        String outputDir,
+        Map<String, Object> args
+) {}
+
+Dan weet de container:
+
+* waar workflow-root zit
+* welke predecessors relevant zijn
+* waar temp/output dirs zijn
+
+En de pod kan dan alles zelf lezen.
+
+⸻
+
+Praktisch patroon dat goed bij jouw situatie past
+
+Producer nodes (node1,2,3)
+
+Schrijven:
+
+/shared/{team}/executions/{date}/{workflowExecId}/temp/{nodeId}/...
+/shared/{team}/executions/{date}/{workflowExecId}/temp/{nodeId}/manifest.json
+
+Consumer node (node4)
+
+Krijgt mee:
+
+* WORKFLOW_ROOT
+* PREDECESSOR_NODE_IDS=node1,node2,node3
+
+En zoekt dan:
+
+for pred in predecessor_node_ids:
+    manifest = f"{workflow_root}/temp/{pred}/manifest.json"
+
+⸻
+
+Dus hoe ziet de flow eruit?
+
+Backend
+  -> bepaalt graph dependencies
+  -> bepaalt env vars / dirs
+  -> start pod
+Pod node1
+  -> schrijft csv
+  -> schrijft manifest.json
+Pod node2
+  -> schrijft csv
+  -> schrijft manifest.json
+Pod node3
+  -> schrijft csv
+  -> schrijft manifest.json
+Pod node4
+  -> leest manifests van node1/2/3
+  -> verzamelt input files
+  -> maakt rapport.pdf
+  -> schrijft naar outputs/
+  -> schrijft eigen manifest.json
+
+Dat is heel netjes.
+
+⸻
+
+Mijn concrete advies
+
+Niet doen
+
+* backend manifests laten schrijven/lezen als backend geen volume-access heeft
+
+Wel doen
+
+* backend geeft:
+    * workflowRoot
+    * tempDir
+    * outputDir
+    * nodeId
+    * predecessorNodeIds
+        mee
+* scripts/pods schrijven zelf manifests
+* consumer scripts lezen manifests zelf
+
+⸻
+
+Bonus: dit is eigenlijk nóg beter
+
+Want de backend hoeft dan niet te weten:
+
+* welk csv-bestand precies bestaat
+* welke namen er gebruikt zijn
+* hoeveel outputs een node maakt
+
+Dat ligt precies waar het hoort:
+
+* bij de runtime / producer script
+
+⸻
+
+Samenvatting
+
+Je hebt helemaal gelijk:
+
+als alleen de pod toegang heeft tot het volume, dan moet de pod ook het manifest wegschrijven.
+
+Dus:
+
+* backend → bepaalt locatie en dependencies
+* pod/script → schrijft manifest
+* latere pod/script → leest manifest
+
+Dat is de juiste oplossing in jouw setup.
+
+⸻
+
+Als je wilt, kan ik hier direct voor je uitschrijven:
+
+1. een manifest.json formaat
+2. een Python helper write_manifest(...)
+3. een Python/R helper read_predecessor_manifests(...)
+4. en hoe je PREDECESSOR_NODE_IDS in de backend opbouwt vanuit jouw GraphModel
+
+
+
 
