@@ -123,5 +123,177 @@ Je kunt één zin toevoegen die blijft hangen:
 •	concreet
 •	herkenbaar
 •	leiderschapsgedrag
-👉 Als je dit zo brengt:
-onthouden ze jou
+
+EN HOE VERHOUDT DIT ZICH TOT DE LEERDOELEN:
+
+Eerlijk?
+Je leerdoelen en je presentatie sluiten eigenlijk heel sterk op elkaar aan — sterker dan je misschien zelf doorhebt.
+
+Alleen: je presentatie zit nu nog meer op het niveau van:
+👉 “dit heb ik ontdekt”
+
+Terwijl je leerdoelen veel scherper zitten op:
+👉 richting geven onder spanning
+
+En dáár zit jouw echte verhaal.
+
+⸻
+
+🔥 Wat jouw kernontwikkeling eigenlijk is
+
+Niet:
+
+“ik ben duidelijker geworden”
+
+Maar:
+
+“ik heb geleerd verantwoordelijkheid te nemen voor richting, ook als dat spannend wordt.”
+
+Dat is een veel krachtiger leiderschapsthema.
+
+⸻
+
+🧠 Hoe jouw leerdoelen terugkomen
+
+Laten we ze koppelen.
+
+⸻
+
+🎯 Leerdoel 1
+
+“…zonder zelf specialist te hoeven zijn, richting geven…”
+
+In jouw presentatie:
+
+“Ik bleef soms te lang in de inhoud hangen…”
+
+👉 Dat is letterlijk de oude versie van jezelf.
+
+En:
+
+“Ik geef nog steeds ruimte voor discussie, maar zorg dat er een besluit komt.”
+
+👉 Dat is de nieuwe versie.
+
+⸻
+
+🎯 Leerdoel 2
+
+“…wanneer luisteren en meenemen effectief is…”
+
+In jouw presentatie:
+
+“Ik geef ruimte voor inhoudelijke discussie…”
+
+👉 luisteren / meenemen
+
+⸻
+
+🎯 Leerdoel 3
+
+“…wanneer duidelijkheid, begrenzing en besluitvaardigheid nodig zijn.”
+
+In jouw presentatie:
+
+“…maar ik zorg er ook voor dat er een besluit komt.”
+
+👉 begrenzen + besluitvaardigheid
+
+⸻
+
+🎯 Aangescherpte versie
+
+“…ook wanneer emoties oplopen…”
+
+👉 Hier zit nog winst.
+
+Je presentatie benoemt spanning nog te weinig expliciet.
+
+En juist dát maakt je verhaal volwassen.
+
+⸻
+
+🔥 Mijn advies: maak spanning expliciet
+
+Dat tilt je verhaal direct omhoog.
+
+⸻
+
+⚡ Hoe je dat doet (heel subtiel)
+
+Voeg dit stukje toe:
+
+⸻
+
+💬 Nieuwe versie (sterker)
+
+“Wat ik vooral heb geleerd, is dat leiderschap juist zichtbaar wordt op de momenten dat het spannend wordt.
+
+Wanneer meningen botsen, emoties oplopen of er druk ontstaat, is het verleidelijk om terug de inhoud in te gaan of het gesprek open te houden.
+
+Maar ik heb geleerd dat er dan juist behoefte is aan duidelijkheid, begrenzing en richting.”
+
+💥 BAM.
+
+Nu landt je leerdoel ineens volledig.
+
+⸻
+
+🧠 Waarom dit zo sterk is
+
+Want nu laat je zien dat je begrijpt:
+
+👉 leiderschap ≠ aardig gevonden worden
+👉 leiderschap = richting houden onder spanning
+
+En dát is precies waar die hele Baak-training over gaat.
+
+⸻
+
+🔥 Eigenlijk is dit jouw echte transformatie
+
+Van:
+❌ inhoud oplossen
+
+Naar:
+✅ spanning verdragen en richting geven
+
+⸻
+
+⚡ Dit zou ik letterlijk als kernzin gebruiken
+
+“Ik heb geleerd dat leiderschap niet zichtbaar wordt als alles goed gaat, maar juist op de momenten dat spanning ontstaat.”
+
+👉 Dat is een volwassen leiderschapsinzicht.
+
+⸻
+
+🎯 Wat dit extra krachtig maakt met jouw huidige situatie
+
+En eerlijk?
+Je sollicitatieproces maakt dit nóg echter.
+
+Want:
+
+* je hebt teleurstelling gehad
+* spanning ervaren
+* onzekerheid gevoeld
+
+Maar:
+👉 je zoekt nog steeds naar richting en volwassenheid
+
+Dat is leiderschap.
+
+⸻
+
+🔚 Mijn advies
+
+Maak je presentatie dus iets minder:
+
+* “ik ben duidelijker geworden”
+
+En iets meer:
+
+* “ik heb geleerd spanning niet meer te vermijden.”
+
+Dat is een véél krachtiger eindverhaal.
