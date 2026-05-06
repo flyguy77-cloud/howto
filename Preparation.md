@@ -124,6 +124,7 @@ Je kunt één zin toevoegen die blijft hangen:
 •	herkenbaar
 •	leiderschapsgedrag
 
+======================
 EN HOE VERHOUDT DIT ZICH TOT DE LEERDOELEN:
 
 Eerlijk?
