@@ -1,0 +1,721 @@
+Ja. Ik zou hem bouwen als AI Workflow Generator Skill.
+
+De skill doet maar één ding:
+
+natuurlijke taal → valide workflow draft → renderen op canvas
+
+Niet uitvoeren. Niet opslaan. Eerst preview. Veilig én demo-waardig.
+
+⸻
+
+1. Skill concept
+
+Naam: WorkflowGenerationSkill
+
+Input:
+
+"Maak een workflow die een script uit GitLab laadt, uitvoert en daarna een REST-call doet."
+
+Output:
+
+{
+  "name": "GitLab script uitvoeren met notificatie",
+  "description": "Laadt een script uit GitLab, voert het uit en stuurt daarna een notificatie.",
+  "nodes": [],
+  "edges": [],
+  "assumptions": [],
+  "warnings": []
+}
+
+⸻
+
+2. Backend structuur
+
+backend
+└── ai
+    ├── controller
+    │   └── AiWorkflowController.java
+    ├── dto
+    │   ├── WorkflowGenerationRequestDto.java
+    │   ├── WorkflowDraftDto.java
+    │   ├── AiNodeDto.java
+    │   ├── AiEdgeDto.java
+    │   └── NodeTypeDefinitionDto.java
+    ├── service
+    │   ├── WorkflowGenerationSkill.java
+    │   ├── WorkflowGenerationSkillImpl.java
+    │   └── WorkflowDraftValidator.java
+    └── provider
+        ├── AiProvider.java
+        ├── MockAiProvider.java
+        └── OpenAiProvider.java
+
+⸻
+
+3. DTO’s
+
+WorkflowGenerationRequestDto.java
+
+package nl.example.workflow.ai.dto;
+import java.util.List;
+import java.util.Map;
+public record WorkflowGenerationRequestDto(
+        String prompt,
+        List<NodeTypeDefinitionDto> allowedNodeTypes,
+        Map<String, Object> context
+) {}
+
+NodeTypeDefinitionDto.java
+
+package nl.example.workflow.ai.dto;
+import java.util.List;
+public record NodeTypeDefinitionDto(
+        String type,
+        String label,
+        List<String> requiredFields,
+        List<String> optionalFields
+) {}
+
+WorkflowDraftDto.java
+
+package nl.example.workflow.ai.dto;
+import java.util.List;
+public record WorkflowDraftDto(
+        String name,
+        String description,
+        List<AiNodeDto> nodes,
+        List<AiEdgeDto> edges,
+        List<String> assumptions,
+        List<String> warnings
+) {}
+
+AiNodeDto.java
+
+package nl.example.workflow.ai.dto;
+import java.util.Map;
+public record AiNodeDto(
+        String id,
+        String type,
+        PositionDto position,
+        Map<String, Object> data
+) {
+    public record PositionDto(
+            double x,
+            double y
+    ) {}
+}
+
+AiEdgeDto.java
+
+package nl.example.workflow.ai.dto;
+public record AiEdgeDto(
+        String id,
+        String source,
+        String target,
+        String label
+) {}
+
+⸻
+
+4. Controller
+
+AiWorkflowController.java
+
+package nl.example.workflow.ai.controller;
+import nl.example.workflow.ai.dto.WorkflowDraftDto;
+import nl.example.workflow.ai.dto.WorkflowGenerationRequestDto;
+import nl.example.workflow.ai.service.WorkflowGenerationSkill;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+@RestController
+@RequestMapping("/api/ai/workflows")
+public class AiWorkflowController {
+    private final WorkflowGenerationSkill workflowGenerationSkill;
+    public AiWorkflowController(WorkflowGenerationSkill workflowGenerationSkill) {
+        this.workflowGenerationSkill = workflowGenerationSkill;
+    }
+    @PostMapping("/generate")
+    public ResponseEntity<WorkflowDraftDto> generateWorkflow(
+            @RequestBody WorkflowGenerationRequestDto request
+    ) {
+        WorkflowDraftDto draft = workflowGenerationSkill.generate(request);
+        return ResponseEntity.ok(draft);
+    }
+}
+
+⸻
+
+5. Skill interface
+
+WorkflowGenerationSkill.java
+
+package nl.example.workflow.ai.service;
+import nl.example.workflow.ai.dto.WorkflowDraftDto;
+import nl.example.workflow.ai.dto.WorkflowGenerationRequestDto;
+public interface WorkflowGenerationSkill {
+    WorkflowDraftDto generate(WorkflowGenerationRequestDto request);
+}
+
+⸻
+
+6. Skill implementatie
+
+WorkflowGenerationSkillImpl.java
+
+package nl.example.workflow.ai.service;
+import nl.example.workflow.ai.dto.WorkflowDraftDto;
+import nl.example.workflow.ai.dto.WorkflowGenerationRequestDto;
+import nl.example.workflow.ai.provider.AiProvider;
+import org.springframework.stereotype.Service;
+@Service
+public class WorkflowGenerationSkillImpl implements WorkflowGenerationSkill {
+    private final AiProvider aiProvider;
+    private final WorkflowDraftValidator validator;
+    public WorkflowGenerationSkillImpl(
+            AiProvider aiProvider,
+            WorkflowDraftValidator validator
+    ) {
+        this.aiProvider = aiProvider;
+        this.validator = validator;
+    }
+    @Override
+    public WorkflowDraftDto generate(WorkflowGenerationRequestDto request) {
+        WorkflowDraftDto draft = aiProvider.generateWorkflowDraft(request);
+        return validator.validateAndNormalize(draft, request.allowedNodeTypes());
+    }
+}
+
+⸻
+
+7. Validator
+
+Voor demo simpel houden. Geen cycli-detectie circus. Eerst type-checks en edge-checks.
+
+WorkflowDraftValidator.java
+
+package nl.example.workflow.ai.service;
+import nl.example.workflow.ai.dto.AiEdgeDto;
+import nl.example.workflow.ai.dto.AiNodeDto;
+import nl.example.workflow.ai.dto.NodeTypeDefinitionDto;
+import nl.example.workflow.ai.dto.WorkflowDraftDto;
+import org.springframework.stereotype.Component;
+import java.util.*;
+import java.util.stream.Collectors;
+@Component
+public class WorkflowDraftValidator {
+    public WorkflowDraftDto validateAndNormalize(
+            WorkflowDraftDto draft,
+            List<NodeTypeDefinitionDto> allowedNodeTypes
+    ) {
+        Set<String> allowedTypes = allowedNodeTypes.stream()
+                .map(NodeTypeDefinitionDto::type)
+                .collect(Collectors.toSet());
+        Set<String> nodeIds = draft.nodes().stream()
+                .map(AiNodeDto::id)
+                .collect(Collectors.toSet());
+        List<String> warnings = new ArrayList<>();
+        if (draft.warnings() != null) {
+            warnings.addAll(draft.warnings());
+        }
+        for (AiNodeDto node : draft.nodes()) {
+            if (!allowedTypes.contains(node.type())) {
+                throw new IllegalArgumentException(
+                        "AI generated unsupported node type: " + node.type()
+                );
+            }
+        }
+        for (AiEdgeDto edge : draft.edges()) {
+            if (!nodeIds.contains(edge.source())) {
+                throw new IllegalArgumentException(
+                        "AI generated edge with unknown source: " + edge.source()
+                );
+            }
+            if (!nodeIds.contains(edge.target())) {
+                throw new IllegalArgumentException(
+                        "AI generated edge with unknown target: " + edge.target()
+                );
+            }
+        }
+        warnings.add("Deze workflow is AI-gegenereerd en moet gecontroleerd worden voordat hij wordt opgeslagen of uitgevoerd.");
+        return new WorkflowDraftDto(
+                draft.name(),
+                draft.description(),
+                draft.nodes(),
+                draft.edges(),
+                draft.assumptions(),
+                warnings
+        );
+    }
+}
+
+⸻
+
+8. AI Provider interface
+
+AiProvider.java
+
+package nl.example.workflow.ai.provider;
+import nl.example.workflow.ai.dto.WorkflowDraftDto;
+import nl.example.workflow.ai.dto.WorkflowGenerationRequestDto;
+public interface AiProvider {
+    WorkflowDraftDto generateWorkflowDraft(WorkflowGenerationRequestDto request);
+}
+
+⸻
+
+9. Mock provider voor snelle demo
+
+Dit zou ik als eerste bouwen. Dan werkt je frontend/canvas al zonder echte AI.
+
+MockAiProvider.java
+
+package nl.example.workflow.ai.provider;
+import nl.example.workflow.ai.dto.AiEdgeDto;
+import nl.example.workflow.ai.dto.AiNodeDto;
+import nl.example.workflow.ai.dto.WorkflowDraftDto;
+import nl.example.workflow.ai.dto.WorkflowGenerationRequestDto;
+import org.springframework.context.annotation.Profile;
+import org.springframework.stereotype.Component;
+import java.util.List;
+import java.util.Map;
+@Component
+@Profile("mock-ai")
+public class MockAiProvider implements AiProvider {
+    @Override
+    public WorkflowDraftDto generateWorkflowDraft(WorkflowGenerationRequestDto request) {
+        return new WorkflowDraftDto(
+                "AI gegenereerde GitLab workflow",
+                "Laadt een script uit GitLab, voert het uit en stuurt daarna een notificatie.",
+                List.of(
+                        new AiNodeDto(
+                                "load-script-1",
+                                "loadScript",
+                                new AiNodeDto.PositionDto(100, 120),
+                                Map.of(
+                                        "repository", "analytics/reports",
+                                        "path", "scripts/monthly-report.py"
+                                )
+                        ),
+                        new AiNodeDto(
+                                "run-script-1",
+                                "runScript",
+                                new AiNodeDto.PositionDto(450, 120),
+                                Map.of(
+                                        "runtime", "python",
+                                        "arguments", List.of("--period", "monthly")
+                                )
+                        ),
+                        new AiNodeDto(
+                                "rest-1",
+                                "rest",
+                                new AiNodeDto.PositionDto(800, 120),
+                                Map.of(
+                                        "method", "POST",
+                                        "url", "https://example.local/api/notify",
+                                        "body", Map.of("message", "Rapportage afgerond")
+                                )
+                        )
+                ),
+                List.of(
+                        new AiEdgeDto("edge-1", "load-script-1", "run-script-1", null),
+                        new AiEdgeDto("edge-2", "run-script-1", "rest-1", null)
+                ),
+                List.of(
+                        "Ik heb Python gekozen omdat het script eindigt op .py.",
+                        "Ik heb een REST-node toegevoegd omdat de prompt om notificatie vraagt."
+                ),
+                List.of()
+        );
+    }
+}
+
+Starten met:
+
+SPRING_PROFILES_ACTIVE=mock-ai
+
+⸻
+
+10. Echte AI provider, conceptueel
+
+Voor de innovatie sprint kun je dit provider-onafhankelijk houden.
+
+OpenAiProvider.java
+
+package nl.example.workflow.ai.provider;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import nl.example.workflow.ai.dto.WorkflowDraftDto;
+import nl.example.workflow.ai.dto.WorkflowGenerationRequestDto;
+import org.springframework.context.annotation.Profile;
+import org.springframework.stereotype.Component;
+@Component
+@Profile("open-ai")
+public class OpenAiProvider implements AiProvider {
+    private final ObjectMapper objectMapper;
+    public OpenAiProvider(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
+    @Override
+    public WorkflowDraftDto generateWorkflowDraft(WorkflowGenerationRequestDto request) {
+        String systemPrompt = buildSystemPrompt(request);
+        String userPrompt = request.prompt();
+        // Hier komt je daadwerkelijke AI-call.
+        // Voor demo kun je dit later invullen met OpenAI, Azure OpenAI,
+        // Ollama, LM Studio of een interne LLM gateway.
+        String aiJsonResponse = callModel(systemPrompt, userPrompt);
+        try {
+            return objectMapper.readValue(aiJsonResponse, WorkflowDraftDto.class);
+        } catch (Exception e) {
+            throw new IllegalStateException("AI response kon niet naar WorkflowDraftDto worden gemapt", e);
+        }
+    }
+    private String buildSystemPrompt(WorkflowGenerationRequestDto request) {
+        try {
+            return """
+                    Je bent een Workflow Generation Skill.
+                    Taak:
+                    Zet de gebruikersprompt om naar een valide WorkflowDraftDto JSON.
+                    Regels:
+                    - Geef uitsluitend JSON terug.
+                    - Gebruik alleen node types uit allowedNodeTypes.
+                    - Maak altijd geldige node ids.
+                    - Maak alleen edges tussen bestaande nodes.
+                    - Voeg assumptions toe als je iets moet aannemen.
+                    - Voeg warnings toe voor onzekerheden.
+                    - Voer niets uit.
+                    - Maak geen scripts.
+                    - Maak geen credentials, tokens of secrets aan.
+                    allowedNodeTypes:
+                    %s
+                    Verwachte JSON structuur:
+                    {
+                      "name": "string",
+                      "description": "string",
+                      "nodes": [
+                        {
+                          "id": "string",
+                          "type": "string",
+                          "position": { "x": 0, "y": 0 },
+                          "data": {}
+                        }
+                      ],
+                      "edges": [
+                        {
+                          "id": "string",
+                          "source": "string",
+                          "target": "string",
+                          "label": "string"
+                        }
+                      ],
+                      "assumptions": [],
+                      "warnings": []
+                    }
+                    """.formatted(objectMapper.writeValueAsString(request.allowedNodeTypes()));
+        } catch (Exception e) {
+            throw new IllegalStateException("Kon system prompt niet bouwen", e);
+        }
+    }
+    private String callModel(String systemPrompt, String userPrompt) {
+        throw new UnsupportedOperationException("Nog te koppelen aan AI provider");
+    }
+}
+
+⸻
+
+11. Frontend: API client
+
+aiWorkflowApi.ts
+
+import axios from "axios";
+export type NodeTypeDefinitionDto = {
+  type: string;
+  label: string;
+  requiredFields: string[];
+  optionalFields: string[];
+};
+export type WorkflowGenerationRequestDto = {
+  prompt: string;
+  allowedNodeTypes: NodeTypeDefinitionDto[];
+  context?: Record<string, unknown>;
+};
+export type AiWorkflowDraftDto = {
+  name: string;
+  description: string;
+  nodes: AiNodeDto[];
+  edges: AiEdgeDto[];
+  assumptions: string[];
+  warnings: string[];
+};
+export type AiNodeDto = {
+  id: string;
+  type: string;
+  position: {
+    x: number;
+    y: number;
+  };
+  data: Record<string, unknown>;
+};
+export type AiEdgeDto = {
+  id: string;
+  source: string;
+  target: string;
+  label?: string | null;
+};
+export async function generateWorkflowWithAi(
+  request: WorkflowGenerationRequestDto
+): Promise<AiWorkflowDraftDto> {
+  const response = await axios.post<AiWorkflowDraftDto>(
+    "/api/ai/workflows/generate",
+    request
+  );
+  return response.data;
+}
+
+⸻
+
+12. Frontend: node catalogus uit je registry
+
+Bijvoorbeeld:
+
+export const aiAllowedNodeTypes = [
+  {
+    type: "loadScript",
+    label: "Load script",
+    requiredFields: ["repository", "path"],
+    optionalFields: ["branch"],
+  },
+  {
+    type: "runScript",
+    label: "Run script",
+    requiredFields: ["runtime"],
+    optionalFields: ["arguments", "timeout"],
+  },
+  {
+    type: "rest",
+    label: "REST call",
+    requiredFields: ["method", "url"],
+    optionalFields: ["headers", "body"],
+  },
+  {
+    type: "condition",
+    label: "Condition",
+    requiredFields: ["expression"],
+    optionalFields: [],
+  },
+];
+
+Later kun je dit automatisch uit je nodeRegistry genereren.
+
+⸻
+
+13. Frontend: AI modal
+
+AiWorkflowGenerateModal.tsx
+
+import { useState } from "react";
+import {
+  Box,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  TextField,
+  Typography,
+  Stack,
+  Alert,
+} from "@mui/material";
+import {
+  generateWorkflowWithAi,
+  AiWorkflowDraftDto,
+  NodeTypeDefinitionDto,
+} from "./aiWorkflowApi";
+type Props = {
+  open: boolean;
+  onClose: () => void;
+  allowedNodeTypes: NodeTypeDefinitionDto[];
+  onGenerated: (draft: AiWorkflowDraftDto) => void;
+};
+export function AiWorkflowGenerateModal({
+  open,
+  onClose,
+  allowedNodeTypes,
+  onGenerated,
+}: Props) {
+  const [prompt, setPrompt] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [lastDraft, setLastDraft] = useState<AiWorkflowDraftDto | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  async function handleGenerate() {
+    setLoading(true);
+    setError(null);
+    try {
+      const draft = await generateWorkflowWithAi({
+        prompt,
+        allowedNodeTypes,
+        context: {
+          source: "workflow-canvas",
+        },
+      });
+      setLastDraft(draft);
+    } catch (err) {
+      console.error(err);
+      setError("Workflow genereren is mislukt.");
+    } finally {
+      setLoading(false);
+    }
+  }
+  function handleUseDraft() {
+    if (!lastDraft) return;
+    onGenerated(lastDraft);
+    onClose();
+    setPrompt("");
+    setLastDraft(null);
+  }
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
+      <DialogTitle>Generate workflow with AI</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ mt: 1 }}>
+          <TextField
+            label="Wat moet de workflow doen?"
+            multiline
+            minRows={4}
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            placeholder="Maak een workflow die een GitLab-script laadt, uitvoert en daarna een REST-notificatie verstuurt."
+            fullWidth
+          />
+          {error && <Alert severity="error">{error}</Alert>}
+          {lastDraft && (
+            <Box>
+              <Typography variant="h6">{lastDraft.name}</Typography>
+              <Typography variant="body2" color="text.secondary">
+                {lastDraft.description}
+              </Typography>
+              {lastDraft.assumptions.length > 0 && (
+                <Alert severity="info" sx={{ mt: 2 }}>
+                  <strong>Aannames:</strong>
+                  <ul>
+                    {lastDraft.assumptions.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </Alert>
+              )}
+              {lastDraft.warnings.length > 0 && (
+                <Alert severity="warning" sx={{ mt: 2 }}>
+                  <strong>Waarschuwingen:</strong>
+                  <ul>
+                    {lastDraft.warnings.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </Alert>
+              )}
+            </Box>
+          )}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Annuleren</Button>
+        <Button
+          onClick={handleGenerate}
+          disabled={!prompt.trim() || loading}
+          variant="outlined"
+        >
+          {loading ? "Genereren..." : "Genereer voorstel"}
+        </Button>
+        <Button
+          onClick={handleUseDraft}
+          disabled={!lastDraft}
+          variant="contained"
+        >
+          Plaats op canvas
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+⸻
+
+14. Canvas koppeling
+
+In je editorpagina:
+
+import { useState } from "react";
+import { Button } from "@mui/material";
+import { Node, Edge } from "@xyflow/react";
+import { AiWorkflowGenerateModal } from "./AiWorkflowGenerateModal";
+import { aiAllowedNodeTypes } from "./aiAllowedNodeTypes";
+import { AiWorkflowDraftDto } from "./aiWorkflowApi";
+export function WorkflowEditorPage() {
+  const [nodes, setNodes] = useState<Node[]>([]);
+  const [edges, setEdges] = useState<Edge[]>([]);
+  const [aiModalOpen, setAiModalOpen] = useState(false);
+  function handleAiWorkflowGenerated(draft: AiWorkflowDraftDto) {
+    const generatedNodes: Node[] = draft.nodes.map((node) => ({
+      id: node.id,
+      type: node.type,
+      position: node.position,
+      data: {
+        ...node.data,
+        label: node.data.label ?? node.type,
+      },
+    }));
+    const generatedEdges: Edge[] = draft.edges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      label: edge.label ?? undefined,
+    }));
+    setNodes(generatedNodes);
+    setEdges(generatedEdges);
+  }
+  return (
+    <>
+      <Button variant="contained" onClick={() => setAiModalOpen(true)}>
+        Generate workflow with AI
+      </Button>
+      <AiWorkflowGenerateModal
+        open={aiModalOpen}
+        onClose={() => setAiModalOpen(false)}
+        allowedNodeTypes={aiAllowedNodeTypes}
+        onGenerated={handleAiWorkflowGenerated}
+      />
+      {/* Hier staat jouw XYFlow canvas */}
+    </>
+  );
+}
+
+⸻
+
+15. Demo prompt
+
+Gebruik tijdens je innovatie sprint zoiets:
+
+Maak een workflow die het Python-script scripts/monthly-report.py uit GitLab laadt,
+het script uitvoert met argument --period monthly,
+en daarna een REST POST doet naar een notificatie-endpoint.
+
+Dan krijg je visueel:
+
+LoadScript → RunScript → Rest
+
+Dat is precies genoeg voor “wow, dit kan dus”.
+
+⸻
+
+16. Mijn advies voor jouw sprint
+
+Begin met deze volgorde:
+
+Stap 1: MockAiProvider maken
+Stap 2: Modal maken
+Stap 3: Draft op canvas renderen
+Stap 4: Allowed node types meegeven
+Stap 5: Pas daarna echte AI-call koppelen
+
+Dan heb je al na stap 3 een werkende demo. De AI is dan alleen nog de turbo erop.
+
+Voor jouw tool is dit een hele sterke innovatie-sprint demo, omdat het direct aansluit op wat je al hebt gebouwd: nodeRegistry, canvas, DTO’s, validatie en backend orchestration.
