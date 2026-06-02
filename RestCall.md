@@ -336,7 +336,133 @@ REST → JSON/CSV op temp → R/Python rapport-node → PDF in output.
 
 
 =========
+### Ontwerp
+```text
+Repository ophalen       -> WorkflowRunner
+Node type dispatch       -> WorkflowNodeExecutor
+REST config mapping      -> WorkflowNodeExecutor
+K8s Job bouwen/starten   -> JobExecutionService
+```
 
+### Request DTO vanuit frontend / Swagger
+```java
+public record RestNodeConfigDto(
+        HttpMethod method,
+        String endpointPath,
+        List<String> kenmerken,
+        Long timeFrom,
+        Long timeTo,
+        Map<String, String> headers,
+        String outputFileName,
+        boolean useBearerToken
+) {}
+```
+
+
+### RunNode:
+```
+public void runNode(UUID workflowId, UUID workflowExecId, String nodeId) {
+
+    NodeEntity node = nodeRepo.findByNodeId(nodeId)
+            .orElseThrow(() -> new IllegalStateException("Node not found: " + nodeId));
+
+    WorkflowEntity wf = workflowRepo.findById(workflowId)
+            .orElseThrow();
+
+    GraphModel graph = graphBuilder.build(wf);
+
+    nodeExecutor.execute(node, graph, workflowExecId);
+
+    List<String> next = graph.successors(nodeId);
+
+    if (next.isEmpty()) {
+        markWorkflowSucceeded(workflowExecId);
+        return;
+    }
+
+    BackgroundJob.enqueue(() ->
+            runNode(workflowId, workflowExecId, next.get(0))
+    );
+}
+```
+
+### WorkflowNodeExecutor
+```java
+case REST_CALL -> {
+    RestNodeConfigDto config = objectMapper.convertValue(
+            node.getParameters(),
+            RestNodeConfigDto.class
+    );
+
+    UUID jobExecId = jobExecutionService.executeRestCall(
+            node,
+            graph,
+            workflowExecId,
+            config
+    );
+
+    awaiter.await(jobExecId);
+}
+```
+
+### request-body DTO
+```java
+public record RestCallBodyDto(
+        List<String> kenmerken,
+        Long timeFrom,
+        Long timeTo
+) {}
+``
+
+
+RestCommandBuilder
+```java
+public String build(RestNodeConfigDto config) {
+    RestCallBodyDto body = new RestCallBodyDto(
+            config.kenmerken(),
+            config.timeFrom(),
+            config.timeTo()
+    );
+
+    String bodyJson = objectMapper.writeValueAsString(body);
+
+    return """
+        set -euo pipefail
+
+        mkdir -p "$TEMP_DIR"
+        mkdir -p "$(dirname "$JOB_LOG")"
+        touch "$JOB_LOG"
+
+        curl -sS -L --fail-with-body \\
+          -X %s \\
+          -H "Content-Type: application/json" \\
+          -H "Accept: application/json" \\
+          %s \\
+          --data %s \\
+          -o "$TEMP_DIR/%s" \\
+          "$REST_BASE_URL%s" \\
+          2>&1 | tee -a "$JOB_LOG"
+        """.formatted(
+            config.method(),
+            config.useBearerToken() ? "-H \"Authorization: Bearer $USER_TOKEN\"" : "",
+            shellQuote(bodyJson),
+            safeFileName(config.outputFileName()),
+            config.endpointPath()
+        );
+}
+``
+
+Flow
+```text
+WorkflowRunner
+  -> nodeRepo.findByNodeId(nodeId)
+  -> WorkflowNodeExecutor.execute(node, graph, workflowExecId)
+  -> executor leest node.parameters
+  -> RestNodeConfigDto
+  -> JobExecutionService bouwt K8s Job
+```
+
+NodeExecutor
 ```java
 case REST_CALL -> {
     RestNodeConfigDto config = objectMapper.convertValue(
