@@ -332,3 +332,25 @@ Houd de REST-node bewust simpel:
 
 Dan heb je meteen een hele sterke demo-node:
 REST → JSON/CSV op temp → R/Python rapport-node → PDF in output.
+
+
+
+=========
+
+```java
+case REST_CALL -> {
+    RestNodeConfigDto config = objectMapper.convertValue(
+            node.getParameters(),
+            RestNodeConfigDto.class
+    );
+
+    UUID jobExecId = jobExecutionService.executeRestCall(
+            node,
+            graph,
+            workflowExecId,
+            config
+    );
+
+    awaiter.await(jobExecId);
+}
+```
