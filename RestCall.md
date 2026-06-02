@@ -19,6 +19,7 @@ docker build -t harbor.local/workflow/rest-runner:0.1 .
 
 Enum uitbreiden
 
+```java
 public enum NodeType {
     LOAD_SCRIPT,
     RUN_SCRIPT,
@@ -26,9 +27,11 @@ public enum NodeType {
     GENERATE_REPORT,
     END
 }
+```
+
 
 DTO/config voor REST node
-
+```java
 public record RestNodeConfig(
         String method,
         String url,
@@ -38,9 +41,11 @@ public record RestNodeConfig(
         String outputFileName,
         boolean includeAuthToken
 ) {}
+```
+
 
 Voorbeeld JSON in node parameters:
-
+```json
 {
   "method": "GET",
   "url": "https://api.example.nl/data/customers",
@@ -53,13 +58,13 @@ Voorbeeld JSON in node parameters:
   "outputFileName": "customers.json",
   "includeAuthToken": true
 }
-
+```
 ⸻
 
 3. CommandBuilder voor REST node
 
 Maak een aparte builder, niet in JobExecutionService proppen.
-
+```java
 @Component
 public class RestCommandBuilder {
     public String build(RestNodeConfig config) {
@@ -125,11 +130,11 @@ public class RestCommandBuilder {
         return "'" + value.replace("'", "'\"'\"'") + "'";
     }
 }
-
+```
 ⸻
 
 4. WorkflowNodeExecutor uitbreiden
-
+```java
 @Service
 @RequiredArgsConstructor
 public class WorkflowNodeExecutor {
@@ -165,11 +170,11 @@ public class WorkflowNodeExecutor {
         }
     }
 }
-
+```
 ⸻
 
 5. JobExecutionService REST-methode
-
+```java
 @Service
 @RequiredArgsConstructor
 public class JobExecutionService {
@@ -238,16 +243,16 @@ public class JobExecutionService {
         return jobExecId;
     }
 }
-
+```
 ⸻
 
 6. Output op volume
 
 REST-node schrijft dan bijvoorbeeld:
-
+```text
 /shared/team/executions/2026-05-19/{workflowExecId}/temp/restNode1/customers.json
 /shared/team/executions/2026-05-19/{workflowExecId}/jobs/{jobExecId}.log
-
+```
 Een latere R/Python node krijgt via:
 
 INPUT_DIRS=/shared/.../temp/restNode1,/shared/.../temp/restNode2
@@ -305,7 +310,7 @@ Advanced
 ⸻
 
 8. Voorbeeld React model
-
+```javascript
 export type RestNodeData = {
   label: string;
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -317,25 +322,9 @@ export type RestNodeData = {
   includeAuthToken: boolean;
   timeoutSeconds?: number;
 };
-
-⸻
-
-Mijn advies voor MVP
-
-Houd de REST-node bewust simpel:
-
-* curl image
-* response naar TEMP_DIR/outputFileName
-* non-2xx = job failed
-* logs naar JOB_LOG
-* auth via $USER_TOKEN wanneer aangevinkt
-
-Dan heb je meteen een hele sterke demo-node:
-REST → JSON/CSV op temp → R/Python rapport-node → PDF in output.
-
-
-
+```
 =========
+
 ### Ontwerp
 ```text
 Repository ophalen       -> WorkflowRunner
@@ -358,9 +347,8 @@ public record RestNodeConfigDto(
 ) {}
 ```
 
-
 ### RunNode:
-```
+```java
 public void runNode(UUID workflowId, UUID workflowExecId, String nodeId) {
 
     NodeEntity node = nodeRepo.findByNodeId(nodeId)
@@ -412,10 +400,9 @@ public record RestCallBodyDto(
         Long timeFrom,
         Long timeTo
 ) {}
-``
+```
 
-
-RestCommandBuilder
+### RestCommandBuilder
 ```java
 public String build(RestNodeConfigDto config) {
     RestCallBodyDto body = new RestCallBodyDto(
@@ -450,19 +437,9 @@ public String build(RestNodeConfigDto config) {
             config.endpointPath()
         );
 }
-``
-
-Flow
-```text
-WorkflowRunner
-  -> nodeRepo.findByNodeId(nodeId)
-  -> WorkflowNodeExecutor.execute(node, graph, workflowExecId)
-  -> executor leest node.parameters
-  -> RestNodeConfigDto
-  -> JobExecutionService bouwt K8s Job
 ```
 
-NodeExecutor
+#### NodeExecutor
 ```java
 case REST_CALL -> {
     RestNodeConfigDto config = objectMapper.convertValue(
@@ -479,4 +456,14 @@ case REST_CALL -> {
 
     awaiter.await(jobExecId);
 }
+```
+
+#### Flow
+```text
+WorkflowRunner
+  -> nodeRepo.findByNodeId(nodeId)
+  -> WorkflowNodeExecutor.execute(node, graph, workflowExecId)
+  -> executor leest node.parameters
+  -> RestNodeConfigDto
+  -> JobExecutionService bouwt K8s Job
 ```
