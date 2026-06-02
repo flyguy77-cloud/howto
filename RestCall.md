@@ -323,7 +323,8 @@ export type RestNodeData = {
   timeoutSeconds?: number;
 };
 ```
-=========
+
+# FROM HERE
 
 ### Ontwerp
 ```text
@@ -334,16 +335,14 @@ K8s Job bouwen/starten   -> JobExecutionService
 ```
 
 ### Request DTO vanuit frontend / Swagger
+
+#### node parameters
 ```java
-public record RestNodeConfigDto(
-        HttpMethod method,
+public record RestNodeParameters(
         String endpointPath,
         List<String> kenmerken,
         Long timeFrom,
-        Long timeTo,
-        Map<String, String> headers,
-        String outputFileName,
-        boolean useBearerToken
+        Long timeTo
 ) {}
 ```
 
