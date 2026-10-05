@@ -267,6 +267,102 @@ export const AcceptWorkflowInvitation = ({
   );
 };
 ```
+## token generatie
+```
+invitationId
+    ↓
+invitation ophalen
+    ↓
+token klopt?
+    ↓
+status == PENDING?
+    ↓
+niet verlopen?
+    ↓
+ingelogde Keycloak user == invited_user_id?
+    ↓
+role uit database
+    ↓
+accept
+```
+```javascript
+private String generateInvitationToken() {
+    byte[] bytes = new byte[32];
+
+    SecureRandom secureRandom = new SecureRandom();
+    secureRandom.nextBytes(bytes);
+
+    return Base64.getUrlEncoder()
+        .withoutPadding()
+        .encodeToString(bytes);
+}
+```
+
+## token save
+```java
+private String hashToken(String token) {
+    try {
+        MessageDigest digest =
+            MessageDigest.getInstance("SHA-256");
+
+        byte[] hash = digest.digest(
+            token.getBytes(StandardCharsets.UTF_8)
+        );
+
+        return HexFormat.of().formatHex(hash);
+    } catch (NoSuchAlgorithmException e) {
+        throw new IllegalStateException(e);
+    }
+}
+```
+## mail link
+```java
+String inviteUrl =
+    frontendBaseUrl
+        + "/invitations/"
+        + invitation.getId()
+        + "?token="
+        + URLEncoder.encode(
+            token,
+            StandardCharsets.UTF_8
+        );
+```
+```typescript
+<Route
+  path="/invitations/:invitationId"
+  element={<WorkflowInvitationPage />}
+/>
+```
+X-Invitation-Token: ...
+
+```java
+@Entity
+public class WorkflowInvitation {
+
+    private Long id;
+
+    private Workflow workflow;
+
+    private String invitedUserId;
+
+    private String invitedBy;
+
+    @Enumerated(EnumType.STRING)
+    private WorkflowRole role;
+
+    @Enumerated(EnumType.STRING)
+    private InvitationStatus status;
+
+    private String tokenHash;
+
+    private Instant createdAt;
+
+    private Instant expiresAt;
+
+    private Instant acceptedAt;
+}
+```
+
 # Status afhandeling
 ```typescript
 switch (invitation.status) {
