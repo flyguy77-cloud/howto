@@ -386,74 +386,6 @@ private String generateInvitationToken() {
         .encodeToString(bytes);
 }
 ```
-**Token Service**
-```java
-public interface InvitationTokenService {
-
-    String generateToken();
-
-    String hash(String token);
-
-    boolean matches(
-        String rawToken,
-        String storedTokenHash
-    );
-}
-```
-```java
-@Service
-public class InvitationTokenServiceImpl
-        implements InvitationTokenService {
-
-    private final SecureRandom secureRandom =
-        new SecureRandom();
-
-    @Override
-    public String generateToken() {
-        byte[] bytes = new byte[32];
-
-        secureRandom.nextBytes(bytes);
-
-        return Base64.getUrlEncoder()
-            .withoutPadding()
-            .encodeToString(bytes);
-    }
-
-    @Override
-    public String hash(String token) {
-        try {
-            MessageDigest digest =
-                MessageDigest.getInstance("SHA-256");
-
-            byte[] hash = digest.digest(
-                token.getBytes(StandardCharsets.UTF_8)
-            );
-
-            return HexFormat.of()
-                .formatHex(hash);
-
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(
-                "SHA-256 is not available",
-                e
-            );
-        }
-    }
-
-    @Override
-    public boolean matches(
-            String rawToken,
-            String storedTokenHash) {
-
-        String suppliedHash = hash(rawToken);
-
-        return MessageDigest.isEqual(
-            suppliedHash.getBytes(StandardCharsets.UTF_8),
-            storedTokenHash.getBytes(StandardCharsets.UTF_8)
-        );
-    }
-}
-```
 **flow**
 ```text
 e-mail
@@ -488,7 +420,7 @@ Invitation -> ACCEPTED
   │
   ▼
 tokenHash -> null
-``
+```
 ### implementatie
 ```java
 @Service
@@ -885,6 +817,74 @@ public ResponseEntity<WorkflowMemberDto> accept(
 }
 ```
 **service**
+token service
+```java
+public interface InvitationTokenService {
+
+    String generateToken();
+
+    String hash(String token);
+
+    boolean matches(
+        String rawToken,
+        String storedTokenHash
+    );
+}
+```
+```java
+@Service
+public class InvitationTokenServiceImpl
+        implements InvitationTokenService {
+
+    private final SecureRandom secureRandom =
+        new SecureRandom();
+
+    @Override
+    public String generateToken() {
+        byte[] bytes = new byte[32];
+
+        secureRandom.nextBytes(bytes);
+
+        return Base64.getUrlEncoder()
+            .withoutPadding()
+            .encodeToString(bytes);
+    }
+
+    @Override
+    public String hash(String token) {
+        try {
+            MessageDigest digest =
+                MessageDigest.getInstance("SHA-256");
+
+            byte[] hash = digest.digest(
+                token.getBytes(StandardCharsets.UTF_8)
+            );
+
+            return HexFormat.of()
+                .formatHex(hash);
+
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(
+                "SHA-256 is not available",
+                e
+            );
+        }
+    }
+
+    @Override
+    public boolean matches(
+            String rawToken,
+            String storedTokenHash) {
+
+        String suppliedHash = hash(rawToken);
+
+        return MessageDigest.isEqual(
+            suppliedHash.getBytes(StandardCharsets.UTF_8),
+            storedTokenHash.getBytes(StandardCharsets.UTF_8)
+        );
+    }
+}
+```
 ```java
 @Override
 @Transactional
