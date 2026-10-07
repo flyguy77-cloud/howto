@@ -1,4 +1,4 @@
-## Invitation hiarchie
+## Frontend Invitation hierarchy
 ```
 src/
 ├── entities/
@@ -31,7 +31,7 @@ src/
     └── workflow-invitation/
         └── WorkflowInvitationPage.tsx
 ```
-## Types
+### Types
 ```typescript
 export type WorkflowRole =
   | "EDITOR"
@@ -76,7 +76,7 @@ export interface WorkflowMember {
   createdBy: string;
 }
 ```
-## API laag
+### API laag
 ```typescript
 export const createWorkflowInvitation = async (
   workflowId: number,
@@ -124,7 +124,7 @@ export const revokeWorkflowInvitation = async (
   );
 };
 ```
-# Invite aanmaken
+### Invite aanmaken
 ```
 Workflow
    ↓
@@ -177,7 +177,7 @@ export const InviteWorkflowMemberDialog = ({
 };
 ```
 
-# Invite link
+### Invite link
 ```
 /app/invitations/123
 ```
@@ -203,7 +203,7 @@ export const WorkflowInvitationPage = () => {
   );
 };
 ```
-# Invite laden
+### Invite laden
 ```typescript
 export const getWorkflowInvitation = async (
   invitationId: number,
@@ -215,7 +215,7 @@ export const getWorkflowInvitation = async (
   return response.data;
 };
 ```
-# Accept component
+### Accept component
 ```typescript
 interface AcceptWorkflowInvitationProps {
   invitationId: number;
@@ -267,55 +267,7 @@ export const AcceptWorkflowInvitation = ({
   );
 };
 ```
-## token generatie
-```
-invitationId
-    ↓
-invitation ophalen
-    ↓
-token klopt?
-    ↓
-status == PENDING?
-    ↓
-niet verlopen?
-    ↓
-ingelogde Keycloak user == invited_user_id?
-    ↓
-role uit database
-    ↓
-accept
-```
-```javascript
-private String generateInvitationToken() {
-    byte[] bytes = new byte[32];
-
-    SecureRandom secureRandom = new SecureRandom();
-    secureRandom.nextBytes(bytes);
-
-    return Base64.getUrlEncoder()
-        .withoutPadding()
-        .encodeToString(bytes);
-}
-```
-
-## token save
-```java
-private String hashToken(String token) {
-    try {
-        MessageDigest digest =
-            MessageDigest.getInstance("SHA-256");
-
-        byte[] hash = digest.digest(
-            token.getBytes(StandardCharsets.UTF_8)
-        );
-
-        return HexFormat.of().formatHex(hash);
-    } catch (NoSuchAlgorithmException e) {
-        throw new IllegalStateException(e);
-    }
-}
-```
-## mail link
+### mail link
 ```java
 String inviteUrl =
     frontendBaseUrl
@@ -335,6 +287,31 @@ String inviteUrl =
 ```
 X-Invitation-Token: ...
 
+### Status afhandeling
+```typescript
+switch (invitation.status) {
+  case "PENDING":
+    // buttons tonen
+    break;
+
+  case "ACCEPTED":
+    // "Je hebt deze uitnodiging al geaccepteerd"
+    break;
+
+  case "DECLINED":
+    // "Je hebt deze uitnodiging geweigerd"
+    break;
+
+  case "REVOKED":
+    // "Deze uitnodiging is ingetrokken"
+    break;
+
+  case "EXPIRED":
+    // "Deze uitnodiging is verlopen"
+    break;
+}
+```
+# Backend
 ```java
 @Entity
 public class WorkflowInvitation {
@@ -363,31 +340,6 @@ public class WorkflowInvitation {
 }
 ```
 
-# Status afhandeling
-```typescript
-switch (invitation.status) {
-  case "PENDING":
-    // buttons tonen
-    break;
-
-  case "ACCEPTED":
-    // "Je hebt deze uitnodiging al geaccepteerd"
-    break;
-
-  case "DECLINED":
-    // "Je hebt deze uitnodiging geweigerd"
-    break;
-
-  case "REVOKED":
-    // "Deze uitnodiging is ingetrokken"
-    break;
-
-  case "EXPIRED":
-    // "Deze uitnodiging is verlopen"
-    break;
-}
-```
-# Backend
 ```java
 public interface WorkflowInvitationService {
 
@@ -421,6 +373,19 @@ public interface WorkflowInvitationService {
         Long workflowId,
         CurrentUser currentUser
     );
+}
+```
+## Token generatie
+```java
+private String generateInvitationToken() {
+    byte[] bytes = new byte[32];
+
+    SecureRandom secureRandom = new SecureRandom();
+    secureRandom.nextBytes(bytes);
+
+    return Base64.getUrlEncoder()
+        .withoutPadding()
+        .encodeToString(bytes);
 }
 ```
 ## implementatie
@@ -694,6 +659,82 @@ public interface WorkflowMemberRepository
 }
 ```
 
+## Mail service
+pom.xml
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-mail</artifactId>
+</dependency>
+```
+
+
+application.yml
+```yaml
+spring:
+  mail:
+    host: smtp.internal.example
+    port: 25
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+```
+
+
+```java
+public interface MailService {
+    void sendWorkflowInvitation(
+        String recipient,
+        String workflowName,
+        String invitationUrl
+    );
+}
+```
+
+
+```java
+@Service
+@RequiredArgsConstructor
+public class MailServiceImpl implements MailService {
+
+    private final JavaMailSender mailSender;
+
+    @Value("${app.mail.from}")
+    private String from;
+
+    @Override
+    public void sendWorkflowInvitation(
+            String recipient,
+            String workflowName,
+            String invitationUrl) {
+
+        SimpleMailMessage message = new SimpleMailMessage();
+
+        message.setFrom(from);
+        message.setTo(recipient);
+        message.setSubject("Uitnodiging voor workflow");
+
+        message.setText("""
+            Je bent uitgenodigd om mee te werken aan workflow "%s".
+
+            Open de uitnodiging via:
+            %s
+            """.formatted(
+                workflowName,
+                invitationUrl
+            ));
+
+        mailSender.send(message);
+    }
+}
+```
+invitationService
+```java
+mailService.sendWorkflowInvitation(
+    invitedUserEmail,
+    workflow.getName(),
+    invitationUrl
+);
+``
 
 
 
