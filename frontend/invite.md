@@ -1,4 +1,4 @@
-## Frontend Invitation hierarchy
+# Frontend Invitation hierarchy
 ```
 src/
 ├── entities/
@@ -90,7 +90,7 @@ export const createWorkflowInvitation = async (
   return response.data;
 };
 ```
-Accept
+**Accept**
 ```typescript
 export const acceptWorkflowInvitation = async (
   invitationId: number,
@@ -102,7 +102,7 @@ export const acceptWorkflowInvitation = async (
   return response.data;
 };
 ```
-decline
+**decline**
 ```typescript
 export const declineWorkflowInvitation = async (
   invitationId: number,
@@ -114,7 +114,7 @@ export const declineWorkflowInvitation = async (
   return response.data;
 };
 ```
-revoke
+**revoke**
 ```typescript
 export const revokeWorkflowInvitation = async (
   invitationId: number,
@@ -176,7 +176,6 @@ export const InviteWorkflowMemberDialog = ({
   );
 };
 ```
-
 ### Invite link
 ```
 /app/invitations/123
@@ -285,7 +284,7 @@ String inviteUrl =
   element={<WorkflowInvitationPage />}
 />
 ```
-X-Invitation-Token: ...
+**X-Invitation-Token: ...**
 
 ### Status afhandeling
 ```typescript
@@ -339,7 +338,6 @@ public class WorkflowInvitation {
     private Instant acceptedAt;
 }
 ```
-
 ```java
 public interface WorkflowInvitationService {
 
@@ -375,7 +373,7 @@ public interface WorkflowInvitationService {
     );
 }
 ```
-## Token generatie
+### Token generatie
 ```java
 private String generateInvitationToken() {
     byte[] bytes = new byte[32];
@@ -388,7 +386,110 @@ private String generateInvitationToken() {
         .encodeToString(bytes);
 }
 ```
-## implementatie
+**Token Service**
+```java
+public interface InvitationTokenService {
+
+    String generateToken();
+
+    String hash(String token);
+
+    boolean matches(
+        String rawToken,
+        String storedTokenHash
+    );
+}
+```
+```java
+@Service
+public class InvitationTokenServiceImpl
+        implements InvitationTokenService {
+
+    private final SecureRandom secureRandom =
+        new SecureRandom();
+
+    @Override
+    public String generateToken() {
+        byte[] bytes = new byte[32];
+
+        secureRandom.nextBytes(bytes);
+
+        return Base64.getUrlEncoder()
+            .withoutPadding()
+            .encodeToString(bytes);
+    }
+
+    @Override
+    public String hash(String token) {
+        try {
+            MessageDigest digest =
+                MessageDigest.getInstance("SHA-256");
+
+            byte[] hash = digest.digest(
+                token.getBytes(StandardCharsets.UTF_8)
+            );
+
+            return HexFormat.of()
+                .formatHex(hash);
+
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(
+                "SHA-256 is not available",
+                e
+            );
+        }
+    }
+
+    @Override
+    public boolean matches(
+            String rawToken,
+            String storedTokenHash) {
+
+        String suppliedHash = hash(rawToken);
+
+        return MessageDigest.isEqual(
+            suppliedHash.getBytes(StandardCharsets.UTF_8),
+            storedTokenHash.getBytes(StandardCharsets.UTF_8)
+        );
+    }
+}
+```
+**flow**
+```text
+e-mail
+  │
+  ▼
+https://workflow-app/invitations/4711?token=RAW_TOKEN
+  │
+  ▼
+React
+  │
+  ├── invitationId = 4711
+  └── rawToken
+        │
+        ▼
+POST /api/workflow-invitations/4711/accept
+X-Invitation-Token: RAW_TOKEN
+        │
+        ▼
+Spring Boot
+  │
+  ├── invitation bestaat?
+  ├── PENDING?
+  ├── currentUser == invitedUser?
+  ├── SHA-256(rawToken) == stored tokenHash?
+  ├── niet verlopen?
+  │
+  ▼
+WorkflowMember aanmaken
+  │
+  ▼
+Invitation -> ACCEPTED
+  │
+  ▼
+tokenHash -> null
+``
+### implementatie
 ```java
 @Service
 @RequiredArgsConstructor
@@ -447,18 +548,29 @@ public class WorkflowInvitationServiceImpl
             );
         }
 
+        String token = tokenService.generateToken();
+        String tokenHash = tokenService.hash(token);
+
         WorkflowInvitation invitation =
             WorkflowInvitation.builder()
-                .workflow(workflow)
+                .workflowId(workflowId)
                 .invitedUserId(request.userId())
                 .invitedBy(currentUser.id())
                 .role(request.role())
                 .status(InvitationStatus.PENDING)
+                .tokenHash(tokenHash)
                 .createdAt(Instant.now())
                 .build();
 
-        return invitationMapper.toDto(
-            invitationRepository.save(invitation)
+        WorkflowInvitation saved =
+            invitationRepository.save(invitation);
+
+        String invitationUrl =
+            buildInvitationUrl(saved.getId(), token);
+
+        mailService.sendInvitation(
+            saved,
+            invitationUrl
         );
     }
 
@@ -631,7 +743,7 @@ public class WorkflowInvitationServiceImpl
     }
 }
 ```
-## repository
+### repository
 ```java
 public interface WorkflowInvitationRepository
         extends JpaRepository<WorkflowInvitation, Long> {
@@ -647,7 +759,7 @@ public interface WorkflowInvitationRepository
     );
 }
 ```
-members
+**members**
 ```java
 public interface WorkflowMemberRepository
         extends JpaRepository<WorkflowMember, Long> {
@@ -658,18 +770,15 @@ public interface WorkflowMemberRepository
     );
 }
 ```
-
-## Mail service
-pom.xml
+### Mail service
+**pom.xml**
 ```xml
 <dependency>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-mail</artifactId>
 </dependency>
 ```
-
-
-application.yml
+**application.yml**
 ```yaml
 spring:
   mail:
@@ -678,8 +787,6 @@ spring:
     username: ${MAIL_USERNAME:}
     password: ${MAIL_PASSWORD:}
 ```
-
-
 ```java
 public interface MailService {
     void sendWorkflowInvitation(
@@ -689,8 +796,6 @@ public interface MailService {
     );
 }
 ```
-
-
 ```java
 @Service
 @RequiredArgsConstructor
@@ -727,17 +832,179 @@ public class MailServiceImpl implements MailService {
     }
 }
 ```
-invitationService
+**invitationService**
 ```java
 mailService.sendWorkflowInvitation(
     invitedUserEmail,
     workflow.getName(),
     invitationUrl
 );
-``
+```
 
+**flow**
+```text
+React frontend
+   │
+   │ POST /workflows/{id}/invitations
+   ▼
+Spring backend
+   │
+   ├─ controleert autorisatie
+   ├─ genereert cryptografisch random token
+   ├─ hash(token)
+   ├─ slaat alleen hash op
+   ├─ bouwt invite URL met raw token
+   │
+   └─ verstuurt e-mail
+          │
+          ▼
+Uitgenodigde gebruiker
+```
+### Accept
+**controller**
+```java
+@PostMapping(
+    "/workflow-invitations/{invitationId}/accept"
+)
+public ResponseEntity<WorkflowMemberDto> accept(
+        @PathVariable Long invitationId,
 
+        @RequestHeader("X-Invitation-Token")
+        String token,
 
+        @CurrentUser CurrentUser currentUser) {
+
+    WorkflowMemberDto member =
+        workflowInvitationService.accept(
+            invitationId,
+            token,
+            currentUser
+        );
+
+    return ResponseEntity.ok(member);
+}
+```
+**service**
+```java
+@Override
+@Transactional
+public WorkflowMemberDto accept(
+        Long invitationId,
+        String rawToken,
+        CurrentUser currentUser) {
+
+    WorkflowInvitation invitation =
+        invitationRepository.findById(invitationId)
+            .orElseThrow(() ->
+                new WorkflowInvitationNotFoundException(
+                    invitationId
+                )
+            );
+
+    validatePending(invitation);
+
+    validateInvitedUser(
+        invitation,
+        currentUser
+    );
+
+    validateToken(
+        invitation,
+        rawToken
+    );
+
+    validateNotExpired(invitation);
+
+    WorkflowMember member =
+        WorkflowMember.builder()
+            .workflow(invitation.getWorkflow())
+            .userId(currentUser.id())
+            .role(invitation.getRole())
+            .createdAt(Instant.now())
+            .createdBy(invitation.getInvitedBy())
+            .build();
+
+    WorkflowMember savedMember =
+        memberRepository.save(member);
+
+    invitation.setStatus(
+        InvitationStatus.ACCEPTED
+    );
+
+    invitation.setAcceptedAt(
+        Instant.now()
+    );
+
+    // optioneel maar aan te raden:
+    invitation.setTokenHash(null);
+
+    invitationRepository.save(invitation);
+
+    return workflowMemberMapper.toDto(
+        savedMember
+    );
+}
+```
+**validatie**
+```java
+private void validatePending(
+        WorkflowInvitation invitation) {
+
+    if (invitation.getStatus()
+            != InvitationStatus.PENDING) {
+
+        throw new InvalidWorkflowInvitationStateException(
+            invitation.getStatus()
+        );
+    }
+}
+
+private void validateInvitedUser(
+        WorkflowInvitation invitation,
+        CurrentUser currentUser) {
+
+    if (!invitation.getInvitedUserId()
+            .equals(currentUser.id())) {
+
+        throw new AccessDeniedException(
+            "Invitation does not belong to current user"
+        );
+    }
+}
+
+private void validateToken(
+        WorkflowInvitation invitation,
+        String rawToken) {
+
+    if (rawToken == null || rawToken.isBlank()) {
+        throw new InvalidInvitationTokenException();
+    }
+
+    if (!tokenService.matches(
+            rawToken,
+            invitation.getTokenHash()
+    )) {
+        throw new InvalidInvitationTokenException();
+    }
+}
+
+private void validateNotExpired(
+        WorkflowInvitation invitation) {
+
+    Instant expiresAt = invitation.getExpiresAt();
+
+    if (
+        expiresAt != null &&
+        Instant.now().isAfter(expiresAt)
+    ) {
+        invitation.setStatus(
+            InvitationStatus.EXPIRED
+        );
+
+        throw new WorkflowInvitationExpiredException();
+    }
+}
+```
 
 
 
